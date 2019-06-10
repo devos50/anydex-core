@@ -43,7 +43,7 @@ class ConnectEndpoint(BaseMarketEndpoint):
 
     def render_GET(self, request):
         print(request.args)
-        ip_addr = request.args[b"ip"][0]
+        ip_addr = request.args[b"ip"][0].decode('utf-8')
         port = int(request.args[b"port"][0])
 
         market_community = self.get_market_community()
