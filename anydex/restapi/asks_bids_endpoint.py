@@ -224,11 +224,11 @@ class BidsEndpoint(BaseAsksBidsEndpoint):
         """
         parameters = http.parse_qs(request.content.read(), 1)
 
-        if not has_param(parameters, 'first_asset_amount') or not has_param(parameters, 'second_asset_amount'):
+        if not has_param(parameters, b'first_asset_amount') or not has_param(parameters, b'second_asset_amount'):
             request.setResponseCode(http.BAD_REQUEST)
             return json.twisted_dumps({"error": "asset amount parameter missing"})
 
-        if not has_param(parameters, 'first_asset_type') or not has_param(parameters, 'second_asset_type'):
+        if not has_param(parameters, b'first_asset_type') or not has_param(parameters, b'second_asset_type'):
             request.setResponseCode(http.BAD_REQUEST)
             return json.twisted_dumps({"error": "asset type parameter missing"})
 
