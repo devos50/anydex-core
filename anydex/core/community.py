@@ -157,6 +157,10 @@ class MatchCache(NumberCache):
         """
         Process the first eligible match. First, we sort the list based on price.
         """
+        if self.order.available_quantity == 0:
+            self._logger.debug("No available quantity for order when processing!")
+            return
+
         item = self.queue.delete()
         if not item:
             self._logger.info("Done with processsing match queue for order %s!", self.order.order_id)
