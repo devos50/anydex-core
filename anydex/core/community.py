@@ -345,6 +345,13 @@ class MarketCommunity(Community, BlockListener):
         Community.__init__(self, *args, **kwargs)
         BlockListener.__init__(self)
 
+        # EXPERIMENTS: use memory TC DB
+        orig_db = self.trustchain.persistence
+
+        from anydex.core.trustchain_mem_db import TrustchainMemoryDatabase
+        self.trustchain.persistence = TrustchainMemoryDatabase()
+        self.trustchain.persistence.original_db = orig_db
+
         self._use_main_thread = True  # Market community is unable to deal with thread pool message processing yet
         self.mid = self.my_peer.mid
         self.mid_register = {}

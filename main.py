@@ -125,7 +125,8 @@ class AnyDexServiceMaker(object):
                                              wallets=self.wallets,
                                              working_directory=options["statedir"],
                                              record_transactions=False,
-                                             is_matchmaker=not options["no-matchmaker"])
+                                             is_matchmaker=not options["no-matchmaker"],
+                                             use_database=False)
 
         self.ipv8.overlays.append(self.market)
         self.ipv8.strategies.append((RandomWalk(self.market), 20))

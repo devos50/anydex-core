@@ -242,8 +242,8 @@ class TestMarketCommunity(TestMarketCommunityBase):
         """
         yield self.introduce_nodes()
 
-        yield self.nodes[0].overlay.create_ask(AssetPair(AssetAmount(50, 'DUM1'), AssetAmount(50, 'MB')), 3600)
-        yield self.nodes[1].overlay.create_bid(AssetPair(AssetAmount(50, 'DUM1'), AssetAmount(50, 'MB')), 3600)
+        yield self.nodes[0].overlay.create_ask(AssetPair(AssetAmount(50, 'DUM1'), AssetAmount(50, 'DUM2')), 3600)
+        yield self.nodes[1].overlay.create_bid(AssetPair(AssetAmount(50, 'DUM1'), AssetAmount(50, 'DUM2')), 3600)
 
         yield self.sleep(0.5)  # Give it some time to complete the trade
 
@@ -252,14 +252,14 @@ class TestMarketCommunity(TestMarketCommunityBase):
         self.assertTrue(list(self.nodes[1].overlay.transaction_manager.find_all()))
 
         balance1 = yield self.nodes[0].overlay.wallets['DUM1'].get_balance()
-        balance2 = yield self.nodes[0].overlay.wallets['MB'].get_balance()
+        balance2 = yield self.nodes[0].overlay.wallets['DUM2'].get_balance()
         self.assertEqual(balance1['available'], 950)
-        self.assertEqual(balance2['available'], 50)
+        self.assertEqual(balance2['available'], 10050)
 
         balance1 = yield self.nodes[1].overlay.wallets['DUM1'].get_balance()
-        balance2 = yield self.nodes[1].overlay.wallets['MB'].get_balance()
+        balance2 = yield self.nodes[1].overlay.wallets['DUM2'].get_balance()
         self.assertEqual(balance1['available'], 1050)
-        self.assertEqual(balance2['available'], -50)
+        self.assertEqual(balance2['available'], 9950)
 
     @trial_timeout(2)
     @inlineCallbacks
