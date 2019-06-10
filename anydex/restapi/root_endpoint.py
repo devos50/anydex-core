@@ -47,6 +47,6 @@ class ConnectEndpoint(BaseMarketEndpoint):
         port = int(request.args[b"port"][0])
 
         market_community = self.get_market_community()
-        market_community.create_introduction_request((ip_addr, port))
-        market_community.trustchain.create_introduction_request((ip_addr, port))
+        market_community.walk_to((ip_addr, port))
+        market_community.trustchain.walk_to((ip_addr, port))
         return b''
