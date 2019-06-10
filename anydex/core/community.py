@@ -199,12 +199,12 @@ class MatchCache(NumberCache):
                                                           other_order_id,
                                                           match_payload.matchmaker_trader_id,
                                                           DeclineMatchReason.OTHER)
-        elif decline_reason == DeclinedTradeReason.ORDER_RESERVED and self.outstanding_request:
+        elif decline_reason in [DeclinedTradeReason.ORDER_RESERVED, DeclinedTradeReason.ALREADY_TRADING] and \
+                self.outstanding_request:
             # Add it to the queue again
             self._logger.debug("Adding entry (%d, %s, %s) to matching queue again", *self.outstanding_request)
             self.queue.insert(self.outstanding_request[0] + 1, self.outstanding_request[1], self.outstanding_request[2])
-        elif decline_reason in [DeclinedTradeReason.NO_AVAILABLE_QUANTITY, DeclinedTradeReason.ALREADY_TRADING] \
-                and self.outstanding_request:
+        elif decline_reason == DeclinedTradeReason.NO_AVAILABLE_QUANTITY and self.outstanding_request:
             # Re-add the item to the queue, with the same priority
             self.queue.insert(self.outstanding_request[0], self.outstanding_request[1], self.outstanding_request[2])
 
