@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 
 import random
+import time
 from base64 import b64decode
 from binascii import hexlify, unhexlify
 from functools import wraps
@@ -406,6 +407,10 @@ class MarketCommunity(Community, BlockListener):
 
         self.logger.info("Market community initialized with mid %s", hexlify(self.mid))
 
+    def print_event(self, name):
+        cur_time = int(round(time.time() * 1000))
+        print("%s - %d" % (name, cur_time))
+
     def get_address_for_trader(self, trader_id):
         """
         Fetch the address for a trader.
@@ -468,6 +473,7 @@ class MarketCommunity(Community, BlockListener):
 
                 # TODO MULTIPLE INVOCATIONS!!
 
+                self.print_event("TX_PAYMENT_SIGNED_COUNTERPARTY")
                 return True
 
             wallet = self.wallets[asset_id]
@@ -485,11 +491,15 @@ class MarketCommunity(Community, BlockListener):
                                                 address=self.lookup_ip(transaction.partner_order_id.trader_id))
                 self.transaction_manager.transaction_repository.add(transaction)
 
+            self.print_event("TX_INIT_SIGNED_COUNTERPARTY")
             return True
         elif block.type == b"tx_done":
             txid = TransactionId(unhexlify(tx["tx"]["transaction_id"]))
             transaction = self.transaction_manager.find_by_id(txid)
-            return transaction and block.is_valid_tx_init_done_block()
+            should_sign = transaction and block.is_valid_tx_init_done_block()
+            if should_sign:
+                self.print_event("TX_DONE_SIGNED_COUNTERPARTY")
+            return should_sign
 
         return False  # Unknown block type
 
@@ -869,6 +879,9 @@ class MarketCommunity(Community, BlockListener):
         def on_block_created(blocks):
             block, _ = blocks
             order.broadcast_peers = self.broadcast_block(block)
+
+            self.print_event("ASK_CREATED")
+
             if self.is_matchmaker:
                 tick.block_hash = block.hash
                 # Search for matches
@@ -904,6 +917,9 @@ class MarketCommunity(Community, BlockListener):
         def on_block_created(blocks):
             block, _ = blocks
             order.broadcast_peers = self.broadcast_block(block)
+
+            self.print_event("BID_CREATED")
+
             if self.is_matchmaker:
                 tick.block_hash = block.hash
                 # Search for matches
@@ -1042,6 +1058,7 @@ class MarketCommunity(Community, BlockListener):
                                               block_type=b'tx_init', transaction=tx_dict)
 
         def on_tx_init_signed(blocks):
+            self.print_event("TX_INIT_BOTH_SIGNED")
             transaction_id = TransactionId(blocks[1].hash)
             transaction = Transaction.from_accepted_trade(accepted_trade, transaction_id)
             transaction.trading_peer = peer
@@ -1066,9 +1083,14 @@ class MarketCommunity(Community, BlockListener):
             "payment": payment.to_dictionary(),
             "version": self.PROTOCOL_VERSION
         }
+
+        def on_payment_both_signed(block):
+            self.print_event("TX_PAYMENT_BOTH_SIGNED")
+            return block
+
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
                                               block_type=b'tx_payment', transaction=tx_dict)
-        return addCallback(deferred, lambda blocks: blocks[0])
+        return addCallback(deferred, lambda blocks: blocks[0]).addCallback(on_payment_both_signed)
 
     @synchronized
     def create_new_tx_done_block(self, peer, ask_order_dict, bid_order_dict, transaction):
@@ -1092,9 +1114,14 @@ class MarketCommunity(Community, BlockListener):
             "tx": transaction.to_block_dictionary(),
             "version": self.PROTOCOL_VERSION
         }
+
+        def on_signed(block):
+            self.print_event("TX_DONE_BOTH_SIGNED")
+            return block
+
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
                                               block_type=b'tx_done', transaction=tx_dict)
-        return addCallback(deferred, lambda blocks: blocks[0])
+        return addCallback(deferred, lambda blocks: blocks[0]).addCallback(on_signed)
 
     def on_tick(self, tick):
         """
@@ -1171,6 +1198,7 @@ class MarketCommunity(Community, BlockListener):
         """
         We received a match message from a matchmaker.
         """
+        self.print_event("RECEIVED_MATCH")
         self.logger.info("We received a match message from %s for order %s.%s (matched against %s.%s)",
                          payload.matchmaker_trader_id.as_hex(), TraderId(self.mid).as_hex(),
                          payload.recipient_order_number, payload.trader_id.as_hex(), payload.order_number)
@@ -1349,6 +1377,7 @@ class MarketCommunity(Community, BlockListener):
 
     # Proposed trade
     def send_proposed_trade(self, proposed_trade, address):
+        self.print_event("SEND_PROPOSED_TRADE")
         payload = proposed_trade.to_network()
 
         self.request_cache.add(ProposedTradeRequestCache(self, proposed_trade))
@@ -1594,6 +1623,7 @@ class MarketCommunity(Community, BlockListener):
             self.accept_proposed_trade(counter_trade)
 
     def accept_proposed_trade(self, proposed_trade):
+        self.print_event("ACCEPT_TRADE")
         accepted_trade = Trade.accept(TraderId(self.mid), Timestamp.now(), proposed_trade)
         payload = accepted_trade.to_network()
 
