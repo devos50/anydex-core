@@ -4,6 +4,7 @@ from ipv8.REST.base_endpoint import BaseEndpoint
 from ipv8.REST.root_endpoint import RootEndpoint as IPv8RootEndpoint
 
 from anydex.restapi.asks_bids_endpoint import AsksEndpoint, BidsEndpoint
+from anydex.restapi.base_market_endpoint import BaseMarketEndpoint
 from anydex.restapi.matchmakers_endpoint import MatchmakersEndpoint
 from anydex.restapi.orders_endpoint import OrdersEndpoint
 from anydex.restapi.state_endpoint import StateEndpoint
@@ -32,6 +33,20 @@ class RootEndpoint(BaseEndpoint):
             b"matchmakers": MatchmakersEndpoint,
             b"state": StateEndpoint,
             b"ipv8": IPv8RootEndpoint,
+            b"connect": ConnectEndpoint,
         }
         for path, child_cls in child_handler_dict.items():
             self.putChild(path, child_cls(self.session))
+
+
+class ConnectEndpoint(BaseMarketEndpoint):
+
+    def render_GET(self, request):
+        print(request.args)
+        ip_addr = request.args[b"ip"][0]
+        port = int(request.args[b"port"][0])
+
+        market_community = self.get_market_community()
+        market_community.create_introduction_request((ip_addr, port))
+        market_community.trustchain.create_introduction_request((ip_addr, port))
+        return b''
