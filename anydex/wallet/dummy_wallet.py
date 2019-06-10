@@ -16,7 +16,7 @@ class BaseDummyWallet(Wallet):
     """
     This is a dummy wallet that is primarily used for testing purposes
     """
-    MONITOR_DELAY = 1
+    MONITOR_DELAY = 0
 
     def __init__(self):
         super(BaseDummyWallet, self).__init__()
