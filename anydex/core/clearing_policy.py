@@ -40,9 +40,10 @@ class SingleTradeClearingPolicy(ClearingPolicy):
     This is achieved by a crawl/inspection of the TrustChain records of a counterparty.
     """
 
-    def __init__(self, community):
+    def __init__(self, community, enforce):
         ClearingPolicy.__init__(self, community)
         self.currently_crawling = set()
+        self.enforce = enforce
 
     @inlineCallbacks
     def should_trade(self, trader_id):
@@ -52,7 +53,10 @@ class SingleTradeClearingPolicy(ClearingPolicy):
         address = yield self.community.get_address_for_trader(trader_id)
         if not address:
             self.logger.info("Clearing policy is unable to determine address of trader %s", trader_id.as_hex())
-            returnValue(False)
+            if not self.enforce:
+                returnValue(True)
+            else:
+                returnValue(False)
 
         # Get the public key of the peer
         peer_pk = yield self.community.send_trader_pk_request(trader_id)
@@ -103,14 +107,20 @@ class SingleTradeClearingPolicy(ClearingPolicy):
                     tx_status[txid] = True
 
             # If there is any transaction for which this party currently holds the token, do not trade
-            return all(tx_status.values())
+            if not self.enforce:
+                return True
+            else:
+                return all(tx_status.values())
 
         # If we are currently crawling this peer already, it means we got another propose trade for another of the
         # traders orders. Refuse to trade for this one then.
         if trader_id in self.currently_crawling:
             self.logger.info("Clearing policy not accepting trade with trader %s - we are already crawling this peer",
                              trader_id.as_hex())
-            returnValue(False)
+            if not self.enforce:
+                returnValue(True)
+            else:
+                returnValue(False)
 
         # Crawl the chain and validate the blocks
         self.logger.info("Starting crawl of chain of trader %s" % trader_id.as_hex())

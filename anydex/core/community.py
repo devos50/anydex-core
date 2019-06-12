@@ -35,7 +35,7 @@ from anydex.core.payload import DeclineMatchPayload, DeclineTradePayload, InfoPa
     TradePayload, WalletInfoPayload
 from anydex.core.payment import Payment
 from anydex.core.payment_id import PaymentId
-from anydex.core.settings import MarketSettings
+from anydex.core.settings import MarketSettings, ExperimentClearingPolicy
 from anydex.core.tick import Ask, Bid, Tick
 from anydex.core.timeout import Timeout
 from anydex.core.timestamp import Timestamp
@@ -366,8 +366,9 @@ class MarketCommunity(Community, BlockListener):
         self.sent_matches = set()
         self.clearing_policies = []
 
-        if self.settings.single_trade:
-            self.clearing_policies.append(SingleTradeClearingPolicy(self))
+        if self.settings.policy == ExperimentClearingPolicy.CHECK or self.settings.policy == ExperimentClearingPolicy.CHECK_LIMITTRADE:
+            enforce = self.settings.policy == ExperimentClearingPolicy.CHECK_LIMITTRADE
+            self.clearing_policies.append(SingleTradeClearingPolicy(self, enforce))
 
         if self.use_database:
             order_repository = DatabaseOrderRepository(self.mid, self.market_database)
