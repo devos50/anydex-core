@@ -1461,9 +1461,9 @@ class MarketCommunity(Community, BlockListener):
                     self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
                     self.send_counter_trade(counter_trade)
 
-        self.should_accept_propose_trade(peer, proposed_trade, order).addCallback(on_proposed_trade_outcome)
+        self.should_accept_propose_trade(proposed_trade, order).addCallback(on_proposed_trade_outcome)
 
-    def should_accept_propose_trade(self, peer, proposed_trade, my_order):
+    def should_accept_propose_trade(self, proposed_trade, my_order):
         # First, check some basic conditions
         should_trade = False
         decline_reason = DeclinedTradeReason.OTHER
