@@ -79,8 +79,6 @@ class Transaction(object):
         self._partner_order_id = partner_order_id
         self._timestamp = timestamp
 
-        self.sent_wallet_info = False
-        self.received_wallet_info = False
         self.incoming_address = None
         self.outgoing_address = None
         self.partner_incoming_address = None
@@ -97,7 +95,7 @@ class Transaction(object):
         """
         (trader_id, transaction_id, order_number, partner_trader_id, partner_order_number,
          asset1_amount, asset1_type, asset1_transferred, asset2_amount, asset2_type, asset2_transferred,
-         transaction_timestamp, sent_wallet_info, received_wallet_info, incoming_address, outgoing_address,
+         transaction_timestamp, incoming_address, outgoing_address,
          partner_incoming_address, partner_outgoing_address) = data
 
         transaction_id = TransactionId(bytes(transaction_id))
@@ -110,8 +108,6 @@ class Transaction(object):
 
         transaction._transferred_assets = AssetPair(AssetAmount(asset1_transferred, str(asset1_type)),
                                                     AssetAmount(asset2_transferred, str(asset2_type)))
-        transaction.sent_wallet_info = sent_wallet_info
-        transaction.received_wallet_info = received_wallet_info
         transaction.incoming_address = WalletAddress(str(incoming_address))
         transaction.outgoing_address = WalletAddress(str(outgoing_address))
         transaction.partner_incoming_address = WalletAddress(str(partner_incoming_address))
@@ -130,9 +126,9 @@ class Transaction(object):
                 database_blob(bytes(self.partner_order_id.trader_id)), int(self.partner_order_id.order_number),
                 self.assets.first.amount, text_type(self.assets.first.asset_id), self.transferred_assets.first.amount,
                 self.assets.second.amount, text_type(self.assets.second.asset_id),
-                self.transferred_assets.second.amount, int(self.timestamp), self.sent_wallet_info,
-                self.received_wallet_info, text_type(self.incoming_address), text_type(self.outgoing_address),
-                text_type(self.partner_incoming_address), text_type(self.partner_outgoing_address))
+                self.transferred_assets.second.amount, int(self.timestamp), text_type(self.incoming_address),
+                text_type(self.outgoing_address), text_type(self.partner_incoming_address),
+                text_type(self.partner_outgoing_address))
 
     @classmethod
     def from_accepted_trade(cls, accepted_trade, transaction_id):
