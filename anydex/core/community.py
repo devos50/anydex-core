@@ -16,7 +16,7 @@ from ipv8.requestcache import NumberCache, RandomNumberCache, RequestCache
 from ipv8.util import addCallback
 
 from twisted.internet import reactor, task
-from twisted.internet.defer import Deferred, DeferredList, fail, inlineCallbacks, succeed
+from twisted.internet.defer import Deferred, DeferredList, fail, inlineCallbacks, succeed, returnValue
 
 from anydex.core import DeclineMatchReason, DeclinedTradeReason, MAX_ORDER_TIMEOUT
 from anydex.core.block import MarketBlock
@@ -370,9 +370,10 @@ class MarketCommunity(Community, BlockListener):
         self.cancelled_orders = set()  # Keep track of cancelled orders so we don't add them again to the orderbook.
         self.sent_matches = set()
         self.clearing_policies = []
+        self.responsibility_checks = set()
 
-        if self.settings.single_trade:
-            self.clearing_policies.append(SingleTradeClearingPolicy(self))
+        if self.settings.max_concurrent_trades > 0:
+            self.clearing_policies.append(SingleTradeClearingPolicy(self, self.settings.max_concurrent_trades))
 
         if self.use_database:
             order_repository = DatabaseOrderRepository(self.mid, self.market_database)
@@ -465,9 +466,6 @@ class MarketCommunity(Community, BlockListener):
                 order.add_trade(transaction.partner_order_id, payment.transferred_assets)
                 self.order_manager.order_repository.update(order)
 
-                if not transaction.is_payment_complete():
-                    self.send_payment(transaction)
-
                 # TODO MULTIPLE INVOCATIONS!!
 
                 return True
@@ -477,9 +475,25 @@ class MarketCommunity(Community, BlockListener):
             transaction_deferred = wallet.monitor_transaction(payment.payment_id.payment_id)
             return transaction_deferred.addCallback(on_payment_received)
         elif block.type == b"tx_init":
-            if not block.is_valid_tx_init_done_block():
-                return False
+            return block.is_valid_tx_init_done_block()
+        elif block.type == b"tx_done":
+            txid = TransactionId(unhexlify(tx["tx"]["transaction_id"]))
+            transaction = self.transaction_manager.find_by_id(txid)
+            return transaction and block.is_valid_tx_init_done_block()
 
+        return False  # Unknown block type
+
+    def on_counter_signed_block(self, block):
+        if block.type == b"tx_payment":
+            # Send the next payment, if we are not done yet
+            txid = TransactionId(unhexlify(block.transaction["payment"]["transaction_id"]))
+            transaction = self.transaction_manager.find_by_id(txid)
+            if not transaction or not block.is_valid_tx_payment_block():
+                return
+
+            if not transaction.is_payment_complete():
+                self.send_payment(transaction)
+        if block.type == b"tx_init":
             # Create a transaction, based on the information in the block
             if not self.transaction_manager.find_by_id(TransactionId(block.hash)):
                 transaction = Transaction.from_tx_init_block(block)
@@ -487,13 +501,13 @@ class MarketCommunity(Community, BlockListener):
                                                 address=self.lookup_ip(transaction.partner_order_id.trader_id))
                 self.transaction_manager.transaction_repository.add(transaction)
 
-            return True
-        elif block.type == b"tx_done":
-            txid = TransactionId(unhexlify(tx["tx"]["transaction_id"]))
-            transaction = self.transaction_manager.find_by_id(txid)
-            return transaction and block.is_valid_tx_init_done_block()
-
-        return False  # Unknown block type
+    def get_counter_tx(self, block):
+        """
+        Return the counter tx, with information on the number of responsibilities.
+        """
+        tx = block.transaction.copy()
+        # TODO insert number of pending trades
+        return tx
 
     def enable_matchmaker(self):
         """
@@ -1007,6 +1021,7 @@ class MarketCommunity(Community, BlockListener):
         """
         tx_dict = {
             "tick": tick.to_block_dict(),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())),
             "version": self.PROTOCOL_VERSION
         }
         block_type = b'ask' if tick.is_ask() else b'bid'
@@ -1025,6 +1040,7 @@ class MarketCommunity(Community, BlockListener):
         tx_dict = {
             "trader_id": order.order_id.trader_id.as_hex(),
             "order_number": int(order.order_id.order_number),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())),
             "version": self.PROTOCOL_VERSION
         }
         return self.trustchain.create_source_block(block_type=b'cancel_order', transaction=tx_dict)
@@ -1045,6 +1061,7 @@ class MarketCommunity(Community, BlockListener):
         """
         tx_dict = {
             "tx": accepted_trade.to_block_dictionary(),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())) + 1,
             "version": self.PROTOCOL_VERSION
         }
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -1073,6 +1090,7 @@ class MarketCommunity(Community, BlockListener):
         """
         tx_dict = {
             "payment": payment.to_dictionary(),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())),
             "version": self.PROTOCOL_VERSION
         }
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -1099,6 +1117,7 @@ class MarketCommunity(Community, BlockListener):
             "ask": ask_order_dict,
             "bid": bid_order_dict,
             "tx": transaction.to_block_dictionary(),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())) - 1,
             "version": self.PROTOCOL_VERSION
         }
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -1833,6 +1852,97 @@ class MarketCommunity(Community, BlockListener):
         request = self.request_cache.pop(u"pk-request", payload.identifier)
         self.pk_register[request.trader_id] = peer.public_key
         request.request_deferred.callback(peer.public_key)
+
+    def get_responsible_trades(self, peer_pk):
+        """
+        Return the set of trades where peer_pk holds responsibility.
+        :param peer_pk: The public key in binary format of the peer that we are verifying.
+        :return: The set with transaction IDs where peer_pk holds responsibility.
+        """
+        tx_status = set()
+
+        blocks = self.trustchain.persistence.get_latest_blocks(peer_pk)
+        blocks = sorted(blocks, key=lambda block: block.sequence_number)
+        for block in blocks:
+            linked = self.trustchain.persistence.get_linked(block)
+            block_pair = (block,) if not block else (block, linked)
+
+            # If our block pair consists of both a source and linked block, make sure the order is good
+            # (first the source block and then the linked block).
+            if len(block_pair) == 2 and block_pair[0].link_sequence_number != 0:
+                block_pair = block_pair[1], block_pair[0]
+
+            if block_pair[0].type == b'tx_init':
+                txid = block_pair[0].hash
+
+                # peer_pk has a responsibility if there is a source block and linked block, and the source block is
+                # initiated by peer_pk.
+                if len(block_pair) == 2 and block_pair[0].public_key == peer_pk:
+                    tx_status.add(txid)
+            elif block_pair[0].type == b'tx_payment':
+                txid = unhexlify(block_pair[0].transaction["payment"]["transaction_id"])
+
+                # peer_pk has a responsibility if it did initiate a tx_payment but it is not countersigned.
+                if len(block_pair) == 1 and block_pair[0].public_key == peer_pk:
+                    tx_status.add(txid)
+
+                # if peer_pk initiated the tx_payment but it is countersigned, peer_pk does not have a responsibility.
+                if len(block_pair) == 2 and block_pair[0].public_key == peer_pk:
+                    tx_status.remove(txid)
+
+            elif block_pair[0].type == b'tx_done':
+                # For the tx_done block, we drop responsibilities for all parties when it is dual-signed
+                txid = unhexlify(block_pair[0].transaction["tx"]["transaction_id"])
+                if len(block_pair) == 2:
+                    tx_status.remove(txid)
+
+        return tx_status
+
+    @inlineCallbacks
+    def verify_chain_responsibility_consistency(self, trader_id):
+        """
+        Crawl the full chain of a given trader id, and verify whether the responsibility claims in their chain
+        are consistent.
+        :param trader_id: The ID of the trader we should check.
+        """
+        address = yield self.community.get_address_for_trader(trader_id)
+        if not address:
+            self.logger.info("Clearing policy is unable to determine address of trader %s", trader_id.as_hex())
+            returnValue(False)
+
+        # Get the public key of the peer
+        peer_pk = yield self.community.send_trader_pk_request(trader_id)
+        peer = Peer(peer_pk, address=address)
+
+        # If we are currently crawling this peer already, it means we got another propose trade for another of the
+        # traders orders. Refuse to trade for this one then.
+        if trader_id in self.responsibility_checks:
+            self.logger.info("We are already checking the trader with id %s for responsibility consistency",
+                             trader_id.as_hex())
+            returnValue(False)
+
+        def on_crawl_done(_):
+            self.logger.debug("Crawl of trader %s done - validating responsibilities", trader_id.as_hex())
+            self.responsibility_checks.remove(trader_id)
+
+            blocks = self.community.trustchain.persistence.get_latest_blocks(peer.public_key.key_to_bin(), limit=1000)
+            blocks.sort(key=lambda block: block.sequence_number)
+
+            tx_status = set()  # Keep track of the status of each transaction
+
+            for block in blocks:
+                linked_block = self.community.trustchain.persistence.get_linked(block)
+                block_pair = (block,) if not linked_block else (block, linked_block)
+                tx_status = self.update_responsibility_set(peer_pk, tx_status, block_pair)
+
+            # If there is any transaction for which this party currently holds the token, do not trade
+            return all(tx_status.values())
+
+        # Crawl the chain and validate the blocks
+        self.logger.info("Starting crawl of chain of trader %s" % trader_id.as_hex())
+        self.responsibility_checks.add(trader_id)
+        should_trade = yield self.trustchain.crawl_chain(peer).addCallback(on_crawl_done)
+        returnValue(should_trade)
 
 
 class MarketTestnetCommunity(MarketCommunity):

@@ -46,6 +46,9 @@ class TrustchainWallet(Wallet, BlockListener):
     def received_block(self, block):
         pass
 
+    def on_counter_signed_block(self, block):
+        pass
+
     def get_name(self):
         return 'Tokens (MB)'
 

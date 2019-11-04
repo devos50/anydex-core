@@ -47,7 +47,7 @@ class TestMarketCommunityBase(TestBase):
         tc_wallet = TrustchainWallet(mock_ipv8.trustchain)
         mock_ipv8.overlay.wallets['MB'] = tc_wallet
 
-        mock_ipv8.overlay.settings.single_trade = False
+        mock_ipv8.overlay.settings.max_concurrent_trades = 0
         mock_ipv8.overlay.clearing_policies = []
 
         return mock_ipv8
@@ -456,6 +456,29 @@ class TestMarketCommunityTwoNodes(TestMarketCommunityBase):
         self.assertEqual(balance1['available'], 1010)
         self.assertEqual(balance2['available'], 9987)
 
+        # Verify blocks
+        my_blocks = self.nodes[0].overlay.trustchain.persistence.get_latest_blocks(
+            self.nodes[0].overlay.trustchain.my_peer.public_key.key_to_bin(), limit=1000)
+        my_blocks = sorted(my_blocks, key=lambda block: block.sequence_number)
+        for block in my_blocks:
+            linked = self.nodes[0].overlay.trustchain.persistence.get_linked(block)
+            if block.type not in [b"ask", b"bid"]:
+                self.assertTrue(linked)
+
+            # Check responsibility counters
+            if block.type == b"tx_init":
+                self.assertEqual(block.transaction["responsibilities"], 1)
+                self.assertEqual(linked.transaction["responsibilities"], 0)
+            elif block.type == b"tx_done":
+                self.assertEqual(block.transaction["responsibilities"], 0)
+                self.assertEqual(linked.transaction["responsibilities"], 0)
+            elif block.type == b"tx_payment" and block.public_key == self.nodes[0].overlay.trustchain.my_peer.public_key.key_to_bin():
+                self.assertEqual(block.transaction["responsibilities"], 0)
+                self.assertEqual(linked.transaction["responsibilities"], 1)
+            elif block.type == b"tx_payment" and block.public_key != self.nodes[0].overlay.trustchain.my_peer.public_key.key_to_bin():
+                self.assertEqual(block.transaction["responsibilities"], 1)
+                self.assertEqual(linked.transaction["responsibilities"], 0)
+
     @trial_timeout(2)
     @inlineCallbacks
     def test_partial_trade(self):
@@ -621,11 +644,12 @@ class TestMarketCommunityFiveNodes(TestMarketCommunityBase):
         Test whether we are refusing to trade with a counterparty who is currently involved in another trade
         We make node 0 malicious, in other words, it does not send a payment back.
         """
-        clearing_policy = SingleTradeClearingPolicy(self.nodes[2].overlay)
+        clearing_policy = SingleTradeClearingPolicy(self.nodes[2].overlay, 1)
         self.nodes[2].overlay.clearing_policies.append(clearing_policy)
 
         yield self.introduce_nodes()
 
+        # Commit counterparty fraud by not transferring assets to the counterparty
         self.nodes[0].overlay.wallets['DUM1'].transfer = lambda *_: Deferred()
         self.nodes[0].overlay.wallets['DUM2'].transfer = lambda *_: Deferred()
 
@@ -652,7 +676,7 @@ class TestMarketCommunityFiveNodes(TestMarketCommunityBase):
         Test whether we accept trade with a counterparty who is currently involved in another trade
         We make node 0 malicious, in other words, it does not send a payment back.
         """
-        clearing_policy = SingleTradeClearingPolicy(self.nodes[2].overlay)
+        clearing_policy = SingleTradeClearingPolicy(self.nodes[2].overlay, 1)
         self.nodes[2].overlay.clearing_policies.append(clearing_policy)
 
         yield self.introduce_nodes()
