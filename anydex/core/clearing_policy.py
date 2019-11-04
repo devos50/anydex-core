@@ -68,7 +68,14 @@ class SingleTradeClearingPolicy(ClearingPolicy):
                 return False
 
             # The block must contain a responsibilities array
-            return block.transaction["responsibilities"] <= self.max_concurrent_trades
+            do_trade = block.transaction["responsibilities"] < self.max_concurrent_trades
+            if do_trade:
+                self.logger.info("Will trade with trader %s (responsible trades: %d)",
+                                 trader_id.as_hex(), block.transaction["responsibilities"])
+            else:
+                self.logger.info("Will NOT trade with trader %s (responsible trades: %d)",
+                                 trader_id.as_hex(), block.transaction["responsibilities"])
+            return do_trade
 
         should_trade = yield self.community.trustchain.send_crawl_request(peer, peer_pk.key_to_bin(), -1, -1)\
             .addCallback(on_blocks)

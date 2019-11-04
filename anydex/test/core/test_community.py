@@ -467,15 +467,15 @@ class TestMarketCommunityTwoNodes(TestMarketCommunityBase):
 
             # Check responsibility counters
             if block.type == b"tx_init":
-                self.assertEqual(block.transaction["responsibilities"], 1)
-                self.assertEqual(linked.transaction["responsibilities"], 0)
+                self.assertEqual(block.transaction["responsibilities"], 0)
+                self.assertEqual(linked.transaction["responsibilities"], 1)
             elif block.type == b"tx_done":
                 self.assertEqual(block.transaction["responsibilities"], 0)
                 self.assertEqual(linked.transaction["responsibilities"], 0)
-            elif block.type == b"tx_payment" and block.public_key == self.nodes[0].overlay.trustchain.my_peer.public_key.key_to_bin():
+            elif block.type == b"tx_payment" and block.link_sequence_number == 0:
                 self.assertEqual(block.transaction["responsibilities"], 0)
                 self.assertEqual(linked.transaction["responsibilities"], 1)
-            elif block.type == b"tx_payment" and block.public_key != self.nodes[0].overlay.trustchain.my_peer.public_key.key_to_bin():
+            elif block.type == b"tx_payment" and block.link_sequence_number != 0:
                 self.assertEqual(block.transaction["responsibilities"], 1)
                 self.assertEqual(linked.transaction["responsibilities"], 0)
 

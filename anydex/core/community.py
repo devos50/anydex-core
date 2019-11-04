@@ -32,7 +32,7 @@ from anydex.core.order_repository import DatabaseOrderRepository, MemoryOrderRep
 from anydex.core.orderbook import DatabaseOrderBook, OrderBook
 from anydex.core.payload import DeclineMatchPayload, DeclineTradePayload, InfoPayload, MatchPayload,\
     OrderStatusRequestPayload, OrderStatusResponsePayload, OrderbookSyncPayload, PingPongPayload, PublicKeyPayload,\
-    TradePayload, WalletInfoPayload
+    TradePayload
 from anydex.core.payment import Payment
 from anydex.core.payment_id import PaymentId
 from anydex.core.settings import MarketSettings
@@ -55,7 +55,6 @@ MSG_PROPOSED_TRADE = 10
 MSG_DECLINED_TRADE = 11
 MSG_COUNTER_TRADE = 12
 MSG_ACCEPT_TRADE = 13
-MSG_WALLET_INFO = 14
 MSG_ORDER_QUERY = 16
 MSG_ORDER_RESPONSE = 17
 MSG_BOOK_SYNC = 19
@@ -396,7 +395,6 @@ class MarketCommunity(Community, BlockListener):
             chr(MSG_DECLINED_TRADE): self.received_decline_trade,
             chr(MSG_COUNTER_TRADE): self.received_counter_trade,
             chr(MSG_ACCEPT_TRADE): self.received_accept_trade,
-            chr(MSG_WALLET_INFO): self.received_wallet_info,
             chr(MSG_ORDER_QUERY): self.received_order_status_request,
             chr(MSG_ORDER_RESPONSE): self.received_order_status,
             chr(MSG_BOOK_SYNC): self.received_orderbook_sync,
@@ -496,17 +494,41 @@ class MarketCommunity(Community, BlockListener):
         if block.type == b"tx_init":
             # Create a transaction, based on the information in the block
             if not self.transaction_manager.find_by_id(TransactionId(block.hash)):
+                tx = block.transaction
+                order_id = OrderId(TraderId(unhexlify(tx["tx"]["partner_trader_id"])),
+                                   OrderNumber(tx["tx"]["partner_order_number"]))
+                order = self.order_manager.order_repository.find_by_id(order_id)
+                if not order:
+                    return
+                incoming_address, outgoing_address = self.get_order_addresses(order)
                 transaction = Transaction.from_tx_init_block(block)
+                transaction.incoming_address = incoming_address
+                transaction.outgoing_address = outgoing_address
+                transaction.partner_incoming_address = WalletAddress(block.transaction["wallets"]["incoming"])
+                transaction.partner_outgoing_address = WalletAddress(block.transaction["wallets"]["outgoing"])
+
                 transaction.trading_peer = Peer(block.public_key,
                                                 address=self.lookup_ip(transaction.partner_order_id.trader_id))
                 self.transaction_manager.transaction_repository.add(transaction)
 
     def get_counter_tx(self, block):
         """
-        Return the counter tx, with information on the number of responsibilities.
+        Return the counter tx, with information on the number of ongoing trades.
         """
         tx = block.transaction.copy()
-        # TODO insert number of pending trades
+        tx["responsibilities"] = len(self.get_responsible_trades(self.my_peer.public_key.key_to_bin(),
+                                                                 is_block_initiator=False,
+                                                                 counter_sign_block=block))
+
+        if block.type == b"tx_init":
+            # Replace wallet addresses
+            order_id = OrderId(TraderId(unhexlify(tx["tx"]["partner_trader_id"])),
+                               OrderNumber(tx["tx"]["partner_order_number"]))
+            order = self.order_manager.order_repository.find_by_id(order_id)
+            incoming_address, outgoing_address = self.get_order_addresses(order)
+            tx["wallets"]["incoming"] = incoming_address.address
+            tx["wallets"]["outgoing"] = outgoing_address.address
+
         return tx
 
     def enable_matchmaker(self):
@@ -1019,12 +1041,13 @@ class MarketCommunity(Community, BlockListener):
         :return: A MarketBlock with the order details.
         :rtype: MarketBlock
         """
+        block_type = b'ask' if tick.is_ask() else b'bid'
         tx_dict = {
             "tick": tick.to_block_dict(),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
+                                                                new_block_type=block_type, is_block_initiator=True)),
             "version": self.PROTOCOL_VERSION
         }
-        block_type = b'ask' if tick.is_ask() else b'bid'
         return self.trustchain.create_source_block(block_type=block_type, transaction=tx_dict)
 
     @synchronized
@@ -1040,7 +1063,9 @@ class MarketCommunity(Community, BlockListener):
         tx_dict = {
             "trader_id": order.order_id.trader_id.as_hex(),
             "order_number": int(order.order_id.order_number),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
+                                                                new_block_type=b'cancel_order',
+                                                                is_block_initiator=True)),
             "version": self.PROTOCOL_VERSION
         }
         return self.trustchain.create_source_block(block_type=b'cancel_order', transaction=tx_dict)
@@ -1059,9 +1084,17 @@ class MarketCommunity(Community, BlockListener):
         :return: A deferred that fires when the transaction counterparty has signed and returned the block.
         :rtype: Deferred
         """
+        order = self.order_manager.order_repository.find_by_id(accepted_trade.recipient_order_id)
+        incoming_address, outgoing_address = self.get_order_addresses(order)
         tx_dict = {
             "tx": accepted_trade.to_block_dictionary(),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())) + 1,
+            "wallets": {
+                "incoming": incoming_address.address,
+                "outgoing": outgoing_address.address
+            },
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
+                                                                new_block_type=b'tx_init',
+                                                                is_block_initiator=True)),
             "version": self.PROTOCOL_VERSION
         }
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -1071,6 +1104,12 @@ class MarketCommunity(Community, BlockListener):
             transaction_id = TransactionId(blocks[1].hash)
             transaction = Transaction.from_accepted_trade(accepted_trade, transaction_id)
             transaction.trading_peer = peer
+
+            transaction.incoming_address = incoming_address
+            transaction.outgoing_address = outgoing_address
+            transaction.partner_incoming_address = WalletAddress(blocks[0].transaction["wallets"]["incoming"])
+            transaction.partner_outgoing_address = WalletAddress(blocks[0].transaction["wallets"]["outgoing"])
+
             self.transaction_manager.transaction_repository.add(transaction)
             return transaction
 
@@ -1090,7 +1129,10 @@ class MarketCommunity(Community, BlockListener):
         """
         tx_dict = {
             "payment": payment.to_dictionary(),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())),
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
+                                                                new_block_type=b'tx_payment',
+                                                                block_txid=bytes(payment.transaction_id),
+                                                                is_block_initiator=True)),
             "version": self.PROTOCOL_VERSION
         }
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -1117,7 +1159,10 @@ class MarketCommunity(Community, BlockListener):
             "ask": ask_order_dict,
             "bid": bid_order_dict,
             "tx": transaction.to_block_dictionary(),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin())) - 1,
+            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
+                                                                new_block_type=b'tx_done',
+                                                                block_txid=bytes(transaction.transaction_id),
+                                                                is_block_initiator=True)),
             "version": self.PROTOCOL_VERSION
         }
         deferred = self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -1647,9 +1692,13 @@ class MarketCommunity(Community, BlockListener):
 
         incoming_address, outgoing_address = self.get_order_addresses(order)
 
+        def on_tx_init_block_created(transaction):
+            self.logger.info("Transaction %s started - initiating payments", transaction.transaction_id.as_hex())
+            self.send_payment(transaction)
+            self.transaction_manager.transaction_repository.update(transaction)
+
         # Create a tx_init block to capture that we are going to initiate a transaction
-        self.create_new_tx_init_block(peer, accepted_trade).\
-            addCallback(lambda transaction: self.send_wallet_info(transaction, incoming_address, outgoing_address))
+        self.create_new_tx_init_block(peer, accepted_trade).addCallback(on_tx_init_block_created)
 
     def send_order_status_request(self, order_id):
         self.logger.debug("Sending order status request to trader %s (number: %d)",
@@ -1694,46 +1743,6 @@ class MarketCommunity(Community, BlockListener):
         }
 
         reactor.callFromThread(request.request_deferred.callback, order_dict)
-
-    def send_wallet_info(self, transaction, incoming_address, outgoing_address):
-        # Update the transaction with the address information
-        transaction.incoming_address = incoming_address
-        transaction.outgoing_address = outgoing_address
-
-        self.logger.debug("Sending wallet info to trader %s (incoming address: %s, outgoing address: %s",
-                          transaction.partner_order_id.trader_id.as_hex(), incoming_address, outgoing_address)
-
-        payload = (TraderId(self.mid), Timestamp.now(), transaction.transaction_id, incoming_address, outgoing_address)
-        auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin()).to_pack_list()
-
-        new_payload = WalletInfoPayload(*payload).to_pack_list()
-
-        packet = self._ez_pack(self._prefix, MSG_WALLET_INFO, [auth, new_payload])
-        self.endpoint.send(self.lookup_ip(transaction.partner_order_id.trader_id), packet)
-
-        transaction.sent_wallet_info = True
-        self.transaction_manager.transaction_repository.update(transaction)
-
-    @lazy_wrapper(WalletInfoPayload)
-    def received_wallet_info(self, _, payload):
-        self.logger.info("Received wallet info from trader %s", payload.trader_id.as_hex())
-
-        transaction = self.transaction_manager.find_by_id(payload.transaction_id)
-        transaction.received_wallet_info = True
-
-        transaction.partner_outgoing_address = payload.outgoing_address
-        transaction.partner_incoming_address = payload.incoming_address
-
-        if not transaction.sent_wallet_info:
-            order = self.order_manager.order_repository.find_by_id(transaction.order_id)
-            incoming_address, outgoing_address = self.get_order_addresses(order)
-            self.send_wallet_info(transaction, incoming_address, outgoing_address)
-        else:
-            self.logger.info("Wallet info exchanged for transaction %s - starting payments",
-                             transaction.transaction_id.as_hex())
-            self.send_payment(transaction)
-
-        self.transaction_manager.transaction_repository.update(transaction)
 
     def send_payment(self, transaction):
         order = self.order_manager.order_repository.find_by_id(transaction.order_id)
@@ -1853,48 +1862,61 @@ class MarketCommunity(Community, BlockListener):
         self.pk_register[request.trader_id] = peer.public_key
         request.request_deferred.callback(peer.public_key)
 
-    def get_responsible_trades(self, peer_pk):
+    def get_responsible_trades(self, peer_pk, is_block_initiator, new_block_type=None, block_txid=None, counter_sign_block=None):
         """
         Return the set of trades where peer_pk holds responsibility.
         :param peer_pk: The public key in binary format of the peer that we are verifying.
-        :return: The set with transaction IDs where peer_pk holds responsibility.
+        :return: The set with responsible transaction IDs.
         """
         tx_status = set()
 
+        # First, check existing blocks
         blocks = self.trustchain.persistence.get_latest_blocks(peer_pk)
         blocks = sorted(blocks, key=lambda block: block.sequence_number)
         for block in blocks:
             linked = self.trustchain.persistence.get_linked(block)
-            block_pair = (block,) if not block else (block, linked)
+            block_pair = (block,) if not linked else (block, linked)
 
-            # If our block pair consists of both a source and linked block, make sure the order is good
-            # (first the source block and then the linked block).
             if len(block_pair) == 2 and block_pair[0].link_sequence_number != 0:
+                # Make sure the block pair is in the right order -> first source block, then linked block
                 block_pair = block_pair[1], block_pair[0]
 
-            if block_pair[0].type == b'tx_init':
-                txid = block_pair[0].hash
-
-                # peer_pk has a responsibility if there is a source block and linked block, and the source block is
-                # initiated by peer_pk.
-                if len(block_pair) == 2 and block_pair[0].public_key == peer_pk:
-                    tx_status.add(txid)
-            elif block_pair[0].type == b'tx_payment':
+            if block.type == b'tx_init':
+                # If peer_pk initiated this block, peer_pk holds responsibility in this trade.
+                if block_pair[0].public_key == peer_pk:
+                    tx_status.add(block_pair[0].hash)
+            elif block.type == b'tx_payment':
                 txid = unhexlify(block_pair[0].transaction["payment"]["transaction_id"])
-
-                # peer_pk has a responsibility if it did initiate a tx_payment but it is not countersigned.
-                if len(block_pair) == 1 and block_pair[0].public_key == peer_pk:
-                    tx_status.add(txid)
-
-                # if peer_pk initiated the tx_payment but it is countersigned, peer_pk does not have a responsibility.
-                if len(block_pair) == 2 and block_pair[0].public_key == peer_pk:
+                # One of the blocks is yours.
+                if len(block_pair) == 1:
+                    # This should be the source block created by peer_pk - this peer is not responsible anymore
+                    tx_status.remove(txid)
+                elif len(block_pair) == 2:
+                    if block_pair[0].public_key == peer_pk:
+                        tx_status.remove(txid)
+                    else:
+                        tx_status.add(txid)
+            elif block.type == b'tx_done':
+                txid = unhexlify(block.transaction["tx"]["transaction_id"])
+                if txid in tx_status:
                     tx_status.remove(txid)
 
-            elif block_pair[0].type == b'tx_done':
-                # For the tx_done block, we drop responsibilities for all parties when it is dual-signed
-                txid = unhexlify(block_pair[0].transaction["tx"]["transaction_id"])
-                if len(block_pair) == 2:
-                    tx_status.remove(txid)
+        # Now we consider what happens when adding the new block
+        if is_block_initiator:
+            if new_block_type == b'tx_init':
+                tx_status.add("new_tx")  # We don't have the tx id so just use a bogus transaction id.
+            elif new_block_type == b'tx_payment':
+                tx_status.remove(block_txid)
+            elif new_block_type == b'tx_done':
+                if block_txid in tx_status:
+                    tx_status.remove(block_txid)
+        else:
+            if counter_sign_block.type == b'tx_payment':
+                txid = unhexlify(counter_sign_block.transaction["payment"]["transaction_id"])
+                tx_status.add(txid)
+            elif counter_sign_block.type == b'tx_done':
+                txid = unhexlify(counter_sign_block.transaction["tx"]["transaction_id"])
+                tx_status.remove(txid)
 
         return tx_status
 
