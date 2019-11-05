@@ -230,13 +230,15 @@ class Transaction(object):
             self.transferred_assets.second += payment.transferred_assets
         self._payments.append(payment)
 
-    def next_payment(self, order_is_ask):
+    def next_payment(self, order_is_ask, transfers_per_trade):
         """
         Return the assets that this user has to send to the counterparty as a next step.
         :param order_is_ask: Whether the order is an ask or not.
         :return: An AssetAmount object, indicating how much we should send to the counterparty.
         """
-        assets_to_transfer = self.assets.first if order_is_ask else self.assets.second
+        div_amount_1 = AssetAmount(transfers_per_trade, self.assets.first.asset_id)
+        div_amount_2 = AssetAmount(transfers_per_trade, self.assets.second.asset_id)
+        assets_to_transfer = (self.assets.first // div_amount_1) if order_is_ask else (self.assets.second // div_amount_2)
         self._logger.debug("Returning %s for the next payment (no incremental payments)", assets_to_transfer)
         return assets_to_transfer
 
