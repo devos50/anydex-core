@@ -345,7 +345,7 @@ class MarketCommunity(Community, BlockListener):
         self.trustchain.add_listener(self, market_block_types)
         self.dht = kwargs.pop('dht', None)
         self.use_database = kwargs.pop('use_database', True)
-        self.settings = MarketSettings()
+        self.settings = kwargs.pop('settings', MarketSettings())
         self.fixed_broadcast_set = []  # Optional list of fixed peers that will receive market messages
 
         db_working_dir = kwargs.pop('working_directory', '')
