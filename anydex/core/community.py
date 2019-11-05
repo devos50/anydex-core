@@ -1871,7 +1871,7 @@ class MarketCommunity(Community, BlockListener):
         tx_status = set()
 
         # First, check existing blocks
-        blocks = self.trustchain.persistence.get_latest_blocks(peer_pk)
+        blocks = self.trustchain.persistence.get_latest_blocks(peer_pk, limit=10000)
         blocks = sorted(blocks, key=lambda block: block.sequence_number)
         for block in blocks:
             linked = self.trustchain.persistence.get_linked(block)
