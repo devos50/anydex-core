@@ -270,8 +270,8 @@ class TestMarketCommunity(TestMarketCommunityBase):
         """
         Test trading dummy tokens against bandwidth tokens between two persons, with a matchmaker
         """
-        self.nodes[0].overlay.settings.transfers_per_trade = 2
-        self.nodes[1].overlay.settings.transfers_per_trade = 2
+        self.nodes[0].overlay.settings.transfers_per_trade = 3
+        self.nodes[1].overlay.settings.transfers_per_trade = 3
 
         yield self.introduce_nodes()
 
@@ -303,7 +303,7 @@ class TestMarketCommunity(TestMarketCommunityBase):
             if block.type == b'tx_payment':
                 count += 1
 
-        self.assertEqual(count, 4)
+        self.assertEqual(count, 6)
 
     @trial_timeout(2)
     @inlineCallbacks

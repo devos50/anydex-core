@@ -77,6 +77,12 @@ class AssetAmount(object):
         else:
             return NotImplemented
 
+    def __mod__(self, other):
+        if isinstance(other, AssetAmount) and self.asset_id == other.asset_id:
+            return self.__class__(self.amount % other.amount, self.asset_id)
+        else:
+            return NotImplemented
+
     def __lt__(self, other):
         if isinstance(other, AssetAmount) and self.asset_id == other.asset_id:
             return self.amount < other.amount
