@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 
 import random
+import time
 from base64 import b64decode
 from binascii import hexlify, unhexlify
 from functools import wraps
@@ -370,6 +371,7 @@ class MarketCommunity(Community, BlockListener):
         self.sent_matches = set()
         self.clearing_policies = []
         self.responsibility_checks = set()
+        self.frauds = []
 
         if self.settings.max_concurrent_trades > 0:
             self.clearing_policies.append(SingleTradeClearingPolicy(self, self.settings.max_concurrent_trades))
@@ -490,7 +492,11 @@ class MarketCommunity(Community, BlockListener):
                 return
 
             if not transaction.is_payment_complete():
-                self.send_payment(transaction)
+                # Commit counterparty fraud \o/
+                cur_time = int(round(time.time() * 1000))
+                self.frauds.append(cur_time)
+                self._logger.info("Committing counterparty fraud!")
+                #self.send_payment(transaction)
         if block.type == b"tx_init":
             # Create a transaction, based on the information in the block
             if not self.transaction_manager.find_by_id(TransactionId(block.hash)):
