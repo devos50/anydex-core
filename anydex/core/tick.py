@@ -18,25 +18,28 @@ class Tick(object):
     """
     TIME_TOLERANCE = 10 * 1000  # A small tolerance for the timestamp, to account for network delays
 
-    def __init__(self, order_id, assets, timeout, timestamp, is_ask, traded=0):
+    def __init__(self, order_id, latitude, longitude, timeout, timestamp, is_ask, traded=0):
         """
         Don't use this class directly, use one of the class methods
 
         :param order_id: A order id to identify the order this tick represents
-        :param assets: The assets being sold/bought
+        :param latitude: The latitude of the order
+        :param longitude: The longitude of the order
         :param timeout: A timeout when this tick is going to expire
         :param timestamp: A timestamp when the tick was created
         :param is_ask: A bool to indicate if this tick is an ask
         :param traded: How much assets have been traded already
         :type order_id: OrderId
-        :type assets: AssetPair
+        :type latitude: float
+        :type longitude: float
         :type timeout: Timeout
         :type timestamp: Timestamp
         :type is_ask: bool
         :type traded: int
         """
         self._order_id = order_id
-        self._assets = assets
+        self._latitude = latitude
+        self._longitude = longitude
         self._timeout = timeout
         self._timestamp = timestamp
         self._is_ask = is_ask
@@ -69,9 +72,9 @@ class Tick(object):
         :rtype: Tick
         """
         if order.is_ask():
-            return Ask(order.order_id, order.assets, order.timeout, order.timestamp, traded=order.traded_quantity)
+            return Ask(order.order_id, order.latitude, order.longitude, order.timeout, order.timestamp, traded=order.traded_quantity)
         else:
-            return Bid(order.order_id, order.assets, order.timeout, order.timestamp, traded=order.traded_quantity)
+            return Bid(order.order_id, order.latitude, order.longitude, order.timeout, order.timestamp, traded=order.traded_quantity)
 
     @property
     def order_id(self):
@@ -81,18 +84,18 @@ class Tick(object):
         return self._order_id
 
     @property
-    def assets(self):
+    def latitude(self):
         """
-        :rtype: AssetPair
+        :rtype: float
         """
-        return self._assets
+        return self._latitude
 
     @property
-    def price(self):
+    def longitude(self):
         """
-        :rtype: Price
+        :rtype: float
         """
-        return self.assets.price
+        return self._longitude
 
     @property
     def timeout(self):
@@ -152,7 +155,8 @@ class Tick(object):
             self._order_id.trader_id,
             self._timestamp,
             self._order_id.order_number,
-            self._assets,
+            self._latitude,
+            self._longitude,
             self._timeout,
             self._traded,
             self._is_ask
@@ -165,7 +169,8 @@ class Tick(object):
         return {
             "trader_id": self.order_id.trader_id.as_hex(),
             "order_number": int(self.order_id.order_number),
-            "assets": self.assets.to_dictionary(),
+            "latitude": self._latitude,
+            "longitude": self._longitude,
             "timeout": int(self.timeout),
             "timestamp": int(self.timestamp),
             "traded": self.traded,
@@ -177,24 +182,23 @@ class Tick(object):
         Create a tick from an OrderPayload.
         """
         if payload.is_ask:
-            return Ask(OrderId(payload.trader_id, payload.order_number), payload.assets, payload.timeout,
+            return Ask(OrderId(payload.trader_id, payload.order_number), payload.latitude, payload.longitude, payload.timeout,
                        payload.timestamp, payload.traded)
         else:
-            return Bid(OrderId(payload.trader_id, payload.order_number), payload.assets, payload.timeout,
+            return Bid(OrderId(payload.trader_id, payload.order_number), payload.latitude, payload.longitude, payload.timeout,
                        payload.timestamp, payload.traded)
 
     def __str__(self):
         """
         Return the string representation of this tick.
         """
-        return "<%s P: %f, Q: %s, O: %s>" % \
-               (self.__class__.__name__, float(self.price.amount), self.assets.first, str(self.order_id))
+        return "<%s Lat: %f, long: %f, O: %s>" % (self.__class__.__name__, self._latitude, self._longitude, str(self.order_id))
 
 
 class Ask(Tick):
     """Represents an ask from a order located on another node."""
 
-    def __init__(self, order_id, assets, timeout, timestamp, traded=0):
+    def __init__(self, order_id, latitude, longitude, timeout, timestamp, traded=0):
         """
         :param order_id: A order id to identify the order this tick represents
         :param assets: The assets being sold/bought
@@ -207,13 +211,13 @@ class Ask(Tick):
         :type timestamp: Timestamp
         :type traded: int
         """
-        super(Ask, self).__init__(order_id, assets, timeout, timestamp, True, traded=traded)
+        super(Ask, self).__init__(order_id, latitude, longitude, timeout, timestamp, True, traded=traded)
 
 
 class Bid(Tick):
     """Represents a bid from a order located on another node."""
 
-    def __init__(self, order_id, assets, timeout, timestamp, traded=0):
+    def __init__(self, order_id, latitude, longitude, timeout, timestamp, traded=0):
         """
         :param order_id: A order id to identify the order this tick represents
         :param assets: The assets being sold/bought
@@ -226,4 +230,4 @@ class Bid(Tick):
         :type timestamp: Timestamp
         :type traded: int
         """
-        super(Bid, self).__init__(order_id, assets, timeout, timestamp, False, traded=traded)
+        super(Bid, self).__init__(order_id, latitude, longitude, timeout, timestamp, False, traded=traded)

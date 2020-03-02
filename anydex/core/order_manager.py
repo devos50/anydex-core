@@ -18,36 +18,40 @@ class OrderManager(object):
 
         self.order_repository = order_repository
 
-    def create_ask_order(self, assets, timeout):
+    def create_ride_offer(self, latitude, longitude, timeout):
         """
         Create an ask order (sell order)
 
-        :param assets: The assets to be exchanged
+        :param latitude: The latitude of the taxi driver
+        :param longitude: The longitude of the taxi driver
         :param timeout: The timeout of the order, when does the order need to be timed out
-        :type assets: AssetPair
+        :type latitude: float
+        :type longitude: float
         :type timeout: Timeout
         :return: The order that is created
         :rtype: Order
         """
-        order = Order(self.order_repository.next_identity(), assets, timeout, Timestamp.now(), True)
+        order = Order(self.order_repository.next_identity(), latitude, longitude, timeout, Timestamp.now(), True)
         self.order_repository.add(order)
 
-        self._logger.info("Ask order created with id: " + str(order.order_id))
+        self._logger.info("Ride offer created with id: " + str(order.order_id))
 
         return order
 
-    def create_bid_order(self, assets, timeout):
+    def create_ride_request(self, latitude, longitude, timeout):
         """
         Create a bid order (buy order)
 
-        :param assets: The assets to be exchanged
+        :param latitude: The latitude of the taxi requester
+        :param longitude: The longitude of the taxi requester
         :param timeout: The timeout of the order, when does the order need to be timed out
-        :type assets: AssetPair
+        :type latitude: float
+        :type longitude: float
         :type timeout: Timeout
         :return: The order that is created
         :rtype: Order
         """
-        order = Order(self.order_repository.next_identity(), assets, timeout, Timestamp.now(), False)
+        order = Order(self.order_repository.next_identity(), latitude, longitude, timeout, Timestamp.now(), False)
         self.order_repository.add(order)
 
         self._logger.info("Bid order created with id: " + str(order.order_id))

@@ -6,19 +6,16 @@ from ipv8.taskmanager import TaskManager
 class TickEntry(TaskManager):
     """Class for representing a tick in the order book"""
 
-    def __init__(self, tick, price_level):
+    def __init__(self, tick):
         """
         :param tick: A tick to represent in the order book
-        :param price_level: A price level to place the tick in
         :type tick: Tick
-        :type price_level: PriceLevel
         """
         super(TickEntry, self).__init__()
 
         self._logger = logging.getLogger(self.__class__.__name__)
 
         self._tick = tick
-        self._price_level = price_level
         self._prev_tick = None
         self._next_tick = None
         self.available_for_matching = 0
@@ -42,11 +39,18 @@ class TickEntry(TaskManager):
         return self._tick.order_id
 
     @property
-    def assets(self):
+    def latitude(self):
         """
-        :rtype: AssetPair
+        :rtype: float
         """
-        return self._tick.assets
+        return self._tick._latitude
+
+    @property
+    def longitude(self):
+        """
+        :rtype: float
+        """
+        return self._tick._longitude
 
     @property
     def traded(self):
@@ -98,13 +102,6 @@ class TickEntry(TaskManager):
         """
         return self._tick.is_valid()
 
-    def price_level(self):
-        """
-        :return: The price level the tick was placed in
-        :rtype: PriceLevel
-        """
-        return self._price_level
-
     @property
     def prev_tick(self):
         """
@@ -136,12 +133,11 @@ class TickEntry(TaskManager):
         self._next_tick = new_next_tick
 
     def update_available_for_matching(self):
-        self.available_for_matching = self._tick._assets.first._amount - self._tick._traded
+        self.available_for_matching = 1 - self._tick._traded
 
     def __str__(self):
         """
         format: <quantity>\t@\t<price>
         :rtype: str
         """
-        return "%s\t@\t%g %s" % (self._tick.assets.first, self._tick.price.amount,
-                                         self._tick.assets.second.asset_id)
+        return "lat: %f, long: %f - %s" % (self.latitude, self.longitude, str(self.order_id))

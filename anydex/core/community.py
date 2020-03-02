@@ -2,6 +2,7 @@ import random
 from asyncio import Future, get_event_loop
 from binascii import hexlify, unhexlify
 from functools import wraps
+from math import radians, sin, asin, sqrt, cos
 
 from ipv8.community import Community, lazy_wrapper
 from ipv8.dht import DHTError
@@ -16,7 +17,7 @@ from anydex.core.block import MarketBlock
 from anydex.core.bloomfilter import BloomFilter
 from anydex.core.database import MarketDB
 from anydex.core.match_queue import MatchPriorityQueue
-from anydex.core.matching_engine import MatchingEngine, PriceTimeStrategy
+from anydex.core.matching_engine import MatchingEngine, TaxiStrategy
 from anydex.core.message import TraderId
 from anydex.core.order import OrderId
 from anydex.core.order_manager import OrderManager
@@ -79,6 +80,22 @@ class MatchCache(NumberCache):
     def timeout_delay(self):
         return 7200.0
 
+    def haversine(self, lon1, lat1, lon2, lat2):
+        """
+        Calculate the great circle distance between two points
+        on the earth (specified in decimal degrees)
+        """
+        # convert decimal degrees to radians
+        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+
+        # haversine formula
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        c = 2 * asin(sqrt(a))
+        r = 6371  # Radius of earth in kilometers. Use 3956 for miles
+        return c * r
+
     def add_match(self, match_payload):
         """
         Add a match to the queue.
@@ -103,9 +120,11 @@ class MatchCache(NumberCache):
             self.matches[other_order_id].append(match_payload)
 
         if not self.queue.contains_order(other_order_id) and not (self.outstanding_request and self.outstanding_request[2] == other_order_id):
-            self._logger.debug("Adding match payload with own order id %s and other id %s to queue",
-                               self.order.order_id, other_order_id)
-            self.queue.insert(0, match_payload.assets.price, other_order_id)
+            distance = self.haversine(self.order.longitude, self.order.latitude, match_payload.longitude,
+                                      match_payload.latitude)
+            self._logger.debug("Adding match payload with own order id %s and other id %s to queue (distance: %f)",
+                               self.order.order_id, other_order_id, distance)
+            self.queue.insert(0, distance, other_order_id)
 
         if not self.schedule_task:
             # Schedule a timer
@@ -154,9 +173,9 @@ class MatchCache(NumberCache):
             self.outstanding_request = item
             if retries == 0:
                 # To prevent all traders from proposing at the same time, we want a small delay
-                delay = random.uniform(0, 0)
+                delay = 0
             else:
-                delay = random.uniform(1, 2)
+                delay = random.uniform(0.5, 1)
             self.schedule_propose = call_later(delay,
                                                self.community.accept_match_and_propose,
                                                self.order, other_order_id, price, ignore_errors=True)
@@ -253,10 +272,9 @@ class ProposedTradeRequestCache(NumberCache):
 
     def on_timeout(self):
         # Just remove the reserved quantity from the order
+        self._logger.info("Timeout of proposed trade with id %s", self.proposed_trade.proposal_id)
         order = self.community.order_manager.order_repository.find_by_id(self.proposed_trade.order_id)
-        proposed_assets = self.proposed_trade.assets
-        owned_assets = proposed_assets.first.amount if order.is_ask() else proposed_assets.first.amount
-        order.release_quantity_for_tick(self.proposed_trade.recipient_order_id, owned_assets)
+        order.release_quantity_for_tick(self.proposed_trade.recipient_order_id, 1)
         self.community.order_manager.order_repository.update(order)
 
         # Let the match cache know about the timeout
@@ -439,7 +457,7 @@ class MarketCommunity(Community):
             self.order_book.restore_from_database()
         else:
             self.order_book = OrderBook()
-        self.matching_engine = MatchingEngine(PriceTimeStrategy(self.order_book))
+        self.matching_engine = MatchingEngine(TaxiStrategy(self.order_book))
         self.is_matchmaker = True
 
     def disable_matchmaker(self):
@@ -541,7 +559,7 @@ class MarketCommunity(Community):
             return 0
 
         order_tick_entry = self.order_book.get_tick(tick.order_id)
-        if tick.assets.first.amount - tick.traded <= 0:
+        if 1 - tick.traded <= 0:
             self.logger.debug("Tick %s does not have any quantity to match!", tick.order_id)
             return 0
 
@@ -686,7 +704,7 @@ class MarketCommunity(Community):
         # Also process it locally if you are a matchmaker
         if self.is_matchmaker:
             # Update ticks in order book, release the reserved quantity and find a new match
-            quantity = trade.assets.first.amount
+            quantity = 1
             completed = self.order_book.update_ticks(trade.order_id, trade.recipient_order_id, quantity, trade_id)
             for completed_order_id in completed:
                 self.on_order_completed(completed_order_id)
@@ -702,23 +720,20 @@ class MarketCommunity(Community):
         packet = self._ez_pack(self._prefix, MSG_ORDER, [auth, payload])
         self.endpoint.send(address, packet)
 
-    def verify_offer_creation(self, assets, timeout):
+    def verify_offer_creation(self, latitude, longitude, timeout):
         """
         Verify whether we are creating a valid order.
         This method raises a RuntimeError if the created order is not valid.
         """
-        if assets.first.asset_id == assets.second.asset_id:
-            raise RuntimeError("You cannot trade between the same wallet")
-
         if timeout < 0:
             raise RuntimeError("The timeout for this order should be positive")
 
         if timeout > MAX_ORDER_TIMEOUT:
             raise RuntimeError("The timeout for this order should be less than a day")
 
-    def create_ask(self, assets, timeout):
+    def create_ride_offer(self, latitude, longitude, timeout):
         """
-        Create an ask order (sell order)
+        Create a taxi ride offer (sell order)
 
         :param assets: The assets to exchange
         :param timeout: The timeout of the order, when does the order need to be timed out
@@ -727,10 +742,10 @@ class MarketCommunity(Community):
         :return: The created order
         :rtype: Order
         """
-        self.verify_offer_creation(assets, timeout)
+        self.verify_offer_creation(latitude, longitude, timeout)
 
         # Create the order
-        order = self.order_manager.create_ask_order(assets, Timeout(timeout))
+        order = self.order_manager.create_ride_offer(latitude, longitude, Timeout(timeout))
         self.order_manager.order_repository.update(order)
 
         if self.is_matchmaker:
@@ -741,12 +756,12 @@ class MarketCommunity(Community):
         # Broadcast the order
         self.broadcast_order(order)
 
-        self.logger.info("Ask created with asset pair %s", assets)
+        self.logger.info("Ask created with lat %s long %s", latitude, longitude)
         return order
 
-    def create_bid(self, assets, timeout):
+    def create_ride_request(self, latitude, longitude, timeout):
         """
-        Create an ask order (sell order)
+        Create a taxi ride request (sell order)
 
         :param assets: The assets to exchange
         :param timeout: The timeout of the order, when does the order need to be timed out
@@ -755,10 +770,10 @@ class MarketCommunity(Community):
         :return: The created order
         :rtype: Order
         """
-        self.verify_offer_creation(assets, timeout)
+        self.verify_offer_creation(latitude, longitude, timeout)
 
         # Create the order
-        order = self.order_manager.create_bid_order(assets, Timeout(timeout))
+        order = self.order_manager.create_ride_request(latitude, longitude, Timeout(timeout))
         self.order_manager.order_repository.update(order)
 
         if self.is_matchmaker:
@@ -769,7 +784,7 @@ class MarketCommunity(Community):
         # Broadcast the order
         self.broadcast_order(order)
 
-        self.logger.info("Bid created with asset pair %s", assets)
+        self.logger.info("Bid created with lat %s long %s", latitude, longitude)
         return order
 
     def add_matchmaker(self, matchmaker):
@@ -786,15 +801,15 @@ class MarketCommunity(Community):
         Process an incoming tick.
         :param tick: the received tick to process
         """
-        self.logger.debug("%s received from trader %s, asset pair: %s", type(tick),
-                          tick.order_id.trader_id.as_hex(), tick.assets)
+        self.logger.debug("%s received from trader %s, lat: %f, long: %f", type(tick),
+                          tick.order_id.trader_id.as_hex(), tick.latitude, tick.longitude)
 
         if self.is_matchmaker:
             insert_method = self.order_book.insert_ask if isinstance(tick, Ask) else self.order_book.insert_bid
             timeout_method = self.on_ask_timeout if isinstance(tick, Ask) else self.on_bid_timeout
 
             if not self.order_book.tick_exists(tick.order_id) and tick.order_id not in self.cancelled_orders:
-                self.logger.info("Inserting tick %s from %s, asset pair: %s", tick, tick.order_id, tick.assets)
+                self.logger.info("Inserting tick %s from %s", tick, tick.order_id)
                 insert_method(tick).add_done_callback(timeout_method)
 
                 if self.order_book.tick_exists(tick.order_id):
@@ -808,7 +823,8 @@ class MarketCommunity(Community):
                             self.match(order_tick_entry.tick)
 
                     # Only after we have matched our own orders, do the matching with other ticks if necessary
-                    self.match(tick)
+                    if not tick.is_ask():
+                        self.match(tick)
 
     def send_match_messages(self, matching_ticks, order_id):
         for tick_entry in matching_ticks:
@@ -882,7 +898,7 @@ class MarketCommunity(Community):
 
         if self.is_matchmaker:
             # Update ticks in order book, release the reserved quantity and find a new match
-            quantity = payload.assets.first.amount
+            quantity = 1
             order_id1 = OrderId(TraderId(payload.trader_id), payload.order_number)
             order_id2 = payload.recipient_order_id
             completed = self.order_book.update_ticks(order_id1, order_id2, quantity, payload.trade_id)
@@ -897,9 +913,10 @@ class MarketCommunity(Community):
         """
         self.num_received_match += 1
 
-        self.logger.info("We received a match message from %s for order %s.%s (matched against %s.%s)",
-                         payload.matchmaker_trader_id.as_hex(), TraderId(self.mid).as_hex(),
-                         payload.recipient_order_number, payload.trader_id.as_hex(), payload.order_number)
+        self.logger.info(
+            "We received a match message from %s for order %s.%s (matched against %s.%s, lat: %f, long: %f)",
+            payload.matchmaker_trader_id.as_hex(), TraderId(self.mid).as_hex(), payload.recipient_order_number,
+            payload.trader_id.as_hex(), payload.order_number, payload.latitude, payload.longitude)
 
         # We got a match, check whether we can respond to this match
         self.update_ip(payload.matchmaker_trader_id, peer.address)
@@ -956,14 +973,12 @@ class MarketCommunity(Community):
         await self.propose_trade(order, other_order_id, propose_quantity, other_price)
 
     async def propose_trade(self, order, other_order_id, propose_quantity, other_price):
-        # We know that the price of the other order is at least acceptable
-        propose_quantity_scaled = AssetPair.from_price(other_price, propose_quantity)
-
         propose_trade = Trade.propose(
             TraderId(self.mid),
             order.order_id,
             other_order_id,
-            propose_quantity_scaled,
+            order.latitude,
+            order.longitude,
             Timestamp.now()
         )
 
@@ -1079,9 +1094,9 @@ class MarketCommunity(Community):
         payload = TradePayload(*payload).to_pack_list()
 
         self.logger.debug("Sending proposed trade with own order id %s and other order id %s to trader "
-                          "%s, asset pair %s", str(proposed_trade.order_id),
+                          "%s, lat: %f, long: %f", str(proposed_trade.order_id),
                           str(proposed_trade.recipient_order_id), proposed_trade.recipient_order_id.trader_id.as_hex(),
-                          proposed_trade.assets)
+                          proposed_trade.latitude, proposed_trade.longitude)
 
         packet = self._ez_pack(self._prefix, MSG_PROPOSED_TRADE, [auth, payload])
         self.endpoint.send(address, packet)
@@ -1145,7 +1160,7 @@ class MarketCommunity(Community):
             return
 
         # Pre-actively reserve quantity in the order
-        quantity_in_propose = proposed_trade.assets.first.amount
+        quantity_in_propose = 1
         should_counter = quantity_in_propose > order.available_quantity
         reserve_quantity = min(quantity_in_propose, order.available_quantity)
         order.reserve_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
@@ -1164,11 +1179,11 @@ class MarketCommunity(Community):
             self.order_manager.order_repository.update(order)
         else:
             if not should_counter:  # Enough quantity left
-                self.start_trade(proposed_trade)
+                self.start_trade(proposed_trade, order)
             else:  # Not all quantity can be traded
-                new_pair = order.assets.proportional_downscale(first=reserve_quantity)
+                new_pair = order.available_quantity
                 counter_trade = Trade.counter(TraderId(self.mid), new_pair, Timestamp.now(), proposed_trade)
-                self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
+                self.logger.debug("Counter trade made for proposed trade")
                 self.send_counter_trade(counter_trade)
 
     def should_accept_propose_trade(self, peer, proposed_trade, my_order):
@@ -1181,10 +1196,6 @@ class MarketCommunity(Community):
             decline_reason = DeclinedTradeReason.ORDER_EXPIRED
         elif my_order.status == "cancelled":
             decline_reason = DeclinedTradeReason.ORDER_CANCELLED
-        elif not my_order.has_acceptable_price(proposed_trade.assets):
-            self.logger.info("Unacceptable price for order %s - %s vs %s", my_order.order_id,
-                             proposed_trade.assets, my_order.assets)
-            decline_reason = DeclinedTradeReason.UNACCEPTABLE_PRICE
         else:
             should_trade = True
 
@@ -1220,8 +1231,7 @@ class MarketCommunity(Community):
         request = self.request_cache.pop("proposed-trade", declined_trade.proposal_id)
 
         order = self.order_manager.order_repository.find_by_id(declined_trade.recipient_order_id)
-        proposed_assets = request.proposed_trade.assets
-        proposed_owned = proposed_assets.first.amount
+        proposed_owned = 1
         order.release_quantity_for_tick(declined_trade.order_id, proposed_owned)
         self.order_manager.order_repository.update(order)
 
@@ -1301,16 +1311,18 @@ class MarketCommunity(Community):
             self.order_manager.order_repository.update(order)
 
             # Trade!
-            self.start_trade(counter_trade)
+            self.start_trade(counter_trade, order)
 
     # Trade
-    def start_trade(self, proposed_trade):
+    def start_trade(self, proposed_trade, order):
         self.logger.info("Starting trade for orders %s and %s", proposed_trade.order_id,
                          proposed_trade.recipient_order_id)
-        self.trading_engine.trade(proposed_trade)
+        self.trading_engine.trade(proposed_trade, (order.latitude, order.longitude),
+                                  (proposed_trade.latitude, proposed_trade.longitude))
 
         auth = BinMemberAuthenticationPayload(self.my_peer.public_key.key_to_bin()).to_pack_list()
-        start_trade = StartTrade.start(TraderId(self.mid), proposed_trade.assets, Timestamp.now(), proposed_trade)
+        start_trade = StartTrade.start(TraderId(self.mid), order.latitude, order.longitude, Timestamp.now(),
+                                       proposed_trade)
         payload = TradePayload(*start_trade.to_network()).to_pack_list()
 
         packet = self._ez_pack(self._prefix, MSG_START_TRADE, [auth, payload])
@@ -1331,14 +1343,14 @@ class MarketCommunity(Community):
 
         self.request_cache.pop(u"proposed-trade", payload.proposal_id)
 
-        self.trading_engine.trade(StartTrade.from_network(payload))
+        self.trading_engine.trade(StartTrade.from_network(payload), (order.latitude, order.longitude), (payload.latitude, payload.longitude))
 
     def on_trade_completed(self, trade, trade_id):
         """
         A trade has been completed. Broadcast details of the trade around the network.
         """
         order = self.order_manager.order_repository.find_by_id(trade.recipient_order_id)
-        order.add_trade(trade.order_id, trade.assets.first)
+        order.add_trade(trade.order_id, 1)
 
         # Update the cache and inform the matchmakers
         cache = self.request_cache.get(u"match", int(order.order_id.order_number))
@@ -1356,7 +1368,7 @@ class MarketCommunity(Community):
             return
 
         # Update ticks in order book, release the reserved quantity and find a new match
-        quantity = payload.assets.first.amount
+        quantity = 1
         order_id1 = OrderId(TraderId(payload.trader_id), payload.order_number)
         order_id2 = payload.recipient_order_id
         completed = self.order_book.update_ticks(order_id1, order_id2, quantity, payload.trade_id)

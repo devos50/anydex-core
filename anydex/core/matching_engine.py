@@ -1,5 +1,6 @@
 import logging
 from abc import ABCMeta, abstractmethod
+from math import radians, sin, cos, asin, sqrt
 from time import time
 
 
@@ -18,20 +19,86 @@ class MatchingStrategy(object):
         self.order_book = order_book
 
     @abstractmethod
-    def match(self, order_id, price, quantity, is_ask):
+    def match(self, order_id, latitude, longitude, is_ask):
         """
         :param order_id: The order id of the tick to match
-        :param price: The price to match against
-        :param quantity: The quantity that should be matched
+        :param latitude: The latitude of the tick
+        :param longitude: The longitude of the tick
         :param is_ask: Whether the object we want to match is an ask
         :type order_id: OrderId
-        :type price: Price
-        :type quantity: Quantity
+        :type latitude: float
+        :type longitude: float
         :type is_ask: Bool
         :return: A list of tuples containing the ticks and the matched quantity
         :rtype: [(str, TickEntry)]
         """
         return
+
+
+class TaxiStrategy(MatchingStrategy):
+    """
+    Matching strategy based on euclidean distance
+    """
+
+    def haversine(self, lon1, lat1, lon2, lat2):
+        """
+        Calculate the great circle distance between two points
+        on the earth (specified in decimal degrees)
+        """
+        # convert decimal degrees to radians
+        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+
+        # haversine formula
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * asin(sqrt(a))
+        r = 6371 # Radius of earth in kilometers. Use 3956 for miles
+        return c * r
+
+    def match(self, order_id, latitude, longitude, is_ask):
+        if latitude < -90 or latitude > 90 or longitude < -180 or longitude > 180:
+            return []
+
+        return self.match_ask(latitude, longitude, order_id) if is_ask else self.match_bid(latitude, longitude, order_id)
+
+    def match_ask(self, latitude, longitude, order_id):
+        if not self.order_book._bids:
+            return []
+
+        min_tick = None
+        min_distance = 100000000
+        for tick_entry in self.order_book._bids.values():
+            if tick_entry.is_blocked_for_matching(order_id):
+                continue
+
+            distance = self.haversine(longitude, latitude, tick_entry.tick.longitude, tick_entry.tick.latitude)
+            if distance < min_distance:
+                min_tick = tick_entry
+                min_distance = distance
+
+        if min_tick:
+            return [min_tick]
+        return []
+
+    def match_bid(self, latitude, longitude, order_id):
+        if not self.order_book._asks:
+            return []
+
+        min_tick = None
+        min_distance = 100000000
+        for tick_entry in self.order_book._asks.values():
+            if tick_entry.is_blocked_for_matching(order_id):
+                continue
+
+            distance = self.haversine(longitude, latitude, tick_entry.tick.longitude, tick_entry.tick.latitude)
+            if distance < min_distance:
+                min_tick = tick_entry
+                min_distance = distance
+
+        if min_tick:
+            return [min_tick]
+        return []
 
 
 class PriceTimeStrategy(MatchingStrategy):
@@ -134,8 +201,8 @@ class MatchingEngine(object):
         now = time()
 
         matched_ticks = self.matching_strategy.match(tick_entry.order_id,
-                                                     tick_entry.price,
-                                                     tick_entry.available_for_matching,
+                                                     tick_entry.latitude,
+                                                     tick_entry.longitude,
                                                      tick_entry.tick.is_ask())
 
         diff = time() - now
