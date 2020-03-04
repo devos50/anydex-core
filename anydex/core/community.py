@@ -817,7 +817,7 @@ class MarketCommunity(Community):
                     # Check for new matches against the orders of this node
                     for order in self.order_manager.order_repository.find_all():
                         order_tick_entry = self.order_book.get_tick(order.order_id)
-                        if not order.is_valid() or not order_tick_entry:
+                        if not order.is_valid() or not order_tick_entry or order.is_ask() == tick.is_ask():
                             continue
 
                         if self.settings.first_matches_own_orders:
