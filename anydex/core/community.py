@@ -822,7 +822,7 @@ class MarketCommunity(Community):
 
                         if self.settings.first_matches_own_orders:
                             did_propose_own = True
-                            self.match(order_tick_entry.tick)
+                            self.send_match_message(order_tick_entry.tick, tick.order_id)
 
                     # Only after we have matched our own orders, do the matching with other ticks if necessary
                     if not tick.is_ask() and not did_propose_own:
