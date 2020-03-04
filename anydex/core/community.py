@@ -1099,7 +1099,7 @@ class MarketCommunity(Community):
                           proposed_trade.latitude, proposed_trade.longitude)
 
         packet = self._ez_pack(self._prefix, MSG_PROPOSED_TRADE, [auth, payload])
-        self.endpoint.send(address, packet)
+        self.endpoint.send(address, packet, always_succeed=True)
 
     def check_trade_payload_validity(self, payload):
         if bytes(payload.recipient_order_id.trader_id) != self.mid:
@@ -1212,7 +1212,7 @@ class MarketCommunity(Community):
         payload = DeclineTradePayload(*payload).to_pack_list()
 
         packet = self._ez_pack(self._prefix, MSG_DECLINED_TRADE, [auth, payload])
-        self.endpoint.send(self.lookup_ip(declined_trade.recipient_order_id.trader_id), packet)
+        self.endpoint.send(self.lookup_ip(declined_trade.recipient_order_id.trader_id), packet, always_succeed=True)
 
     @lazy_wrapper(DeclineTradePayload)
     def received_decline_trade(self, _, payload):
@@ -1261,7 +1261,7 @@ class MarketCommunity(Community):
         payload = TradePayload(*payload).to_pack_list()
 
         packet = self._ez_pack(self._prefix, MSG_COUNTER_TRADE, [auth, payload])
-        self.endpoint.send(self.lookup_ip(counter_trade.recipient_order_id.trader_id), packet)
+        self.endpoint.send(self.lookup_ip(counter_trade.recipient_order_id.trader_id), packet, always_succeed=True)
 
     @lazy_wrapper(TradePayload)
     def received_counter_trade(self, _, payload):
@@ -1326,7 +1326,7 @@ class MarketCommunity(Community):
         payload = TradePayload(*start_trade.to_network()).to_pack_list()
 
         packet = self._ez_pack(self._prefix, MSG_START_TRADE, [auth, payload])
-        self.endpoint.send(self.lookup_ip(proposed_trade.order_id.trader_id), packet)
+        self.endpoint.send(self.lookup_ip(proposed_trade.order_id.trader_id), packet, always_succeed=True)
 
     @lazy_wrapper(TradePayload)
     def received_start_trade(self, peer, payload):
