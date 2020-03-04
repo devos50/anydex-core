@@ -812,6 +812,7 @@ class MarketCommunity(Community):
                 self.logger.info("Inserting tick %s from %s", tick, tick.order_id)
                 insert_method(tick).add_done_callback(timeout_method)
 
+                did_propose_own = False
                 if self.order_book.tick_exists(tick.order_id):
                     # Check for new matches against the orders of this node
                     for order in self.order_manager.order_repository.find_all():
@@ -820,10 +821,11 @@ class MarketCommunity(Community):
                             continue
 
                         if self.settings.first_matches_own_orders:
+                            did_propose_own = True
                             self.match(order_tick_entry.tick)
 
                     # Only after we have matched our own orders, do the matching with other ticks if necessary
-                    if not tick.is_ask():
+                    if not tick.is_ask() and not did_propose_own:
                         self.match(tick)
 
     def send_match_messages(self, matching_ticks, order_id):
