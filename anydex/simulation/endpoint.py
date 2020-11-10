@@ -1,0 +1,35 @@
+import random
+from asyncio import Queue, ensure_future
+
+from ipv8.messaging.interfaces.udp.endpoint import UDPv4Address
+from ipv8.test.mocking.endpoint import AutoMockEndpoint, internet
+
+
+class PySimEndpoint(AutoMockEndpoint):
+
+    def __init__(self, env, settings):
+        super().__init__()
+        self.env = env
+        self.msg_queue = Queue()
+        self.bytes_up = 0
+        self.bytes_down = 0
+        self.settings = settings
+        self.send_fail_probability = 0
+        self.overlay = None
+        ensure_future(self.process_messages())
+
+    async def process_messages(self):
+        while True:
+            from_address, packet = await self.msg_queue.get()
+            self.bytes_down += len(packet)
+            self.notify_listeners((from_address, packet))
+
+    def send(self, socket_address, packet):
+        if socket_address in internet:
+            # For the unit tests we handle messages in separate asyncio tasks to prevent infinite recursion.
+            ep = internet[socket_address]
+            self.bytes_up += len(packet)
+            if random.random() > self.send_fail_probability:
+                ep.msg_queue.put_nowait((self.wan_address, packet))
+        else:
+            raise AssertionError("Received data from unregistered address %s" % repr(socket_address))
