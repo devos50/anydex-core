@@ -12,7 +12,7 @@ class TrustchainMemoryDatabase(object):
     """
     blocks = {}
 
-    def __init__(self, env):
+    def __init__(self):
         self.block_cache = {}
         self.linked_block_cache = {}
         self.block_types = {}
@@ -23,7 +23,6 @@ class TrustchainMemoryDatabase(object):
         self.double_spends = []
         self.all_blocks = []
         self.hash_map = {}
-        self.env = env
 
     def get_block_class(self, block_type):
         """

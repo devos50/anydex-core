@@ -3,7 +3,9 @@ import asyncio
 
 
 class EventSimulatorLoop(asyncio.AbstractEventLoop):
-    '''A simple event-driven simulator, using async/await'''
+    """
+    A simple event-driven simulator, using async/await
+    """
 
     def __init__(self):
         self._time = 0

@@ -1,6 +1,5 @@
 import asyncio
 import os
-import random
 import shutil
 import time
 from asyncio import ensure_future
@@ -13,6 +12,8 @@ from anydex.simulation.ipv8 import SimulatedIPv8
 from anydex.core.assetamount import AssetAmount
 from anydex.core.assetpair import AssetPair
 from anydex.core.message import TraderId
+from anydex.simulation.scenario import Scenario
+from anydex.simulation.wallet import SimulationWallet
 
 
 class AnyDexSimulation:
@@ -20,21 +21,72 @@ class AnyDexSimulation:
     Represents a simulation with some settings.
     """
 
-    def __init__(self, settings, env):
+    def __init__(self, settings):
         self.settings = settings
-        self.env = env
         self.nodes = []
         self.data_dir = os.path.join("data", "n_%d" % (self.settings.peers,))
+        self.scenario = None
+        self.orders = {}
 
         self.loop = EventSimulatorLoop()
         asyncio.set_event_loop(self.loop)
+
+        # Prepare the scenario file, if set
+        if settings.scenario_file:
+            self.scenario = Scenario(settings.scenario_file)
+            self.scenario.parse()
+            self.settings.peers = len(self.scenario.unique_users)
+            self.data_dir = os.path.join("data", "n_%d" % (self.settings.peers,))  # Reset the data dir
 
     def start_ipv8_nodes(self):
         for peer_ind in range(1, self.settings.peers + 1):
             if peer_ind % 100 == 0:
                 print("Created %d peers..." % peer_ind)
-            ipv8 = SimulatedIPv8(self.settings, self.env, self.data_dir, peer_ind)
+            ipv8 = SimulatedIPv8(self.settings, self.data_dir, peer_ind)
             self.nodes.append(ipv8)
+
+    def create_ask(self, node, order):
+        print("Created ask")
+        def on_created(o):
+            self.orders[order.id] = o
+
+        pair = AssetPair(AssetAmount(order.asset1_amount, order.asset1_type), AssetAmount(order.asset2_amount, order.asset2_type))
+        ensure_future(node.overlay.create_ask(pair, order.timeout // 1000)).add_done_callback(on_created)
+
+    def create_bid(self, node, order):
+        print("Created bid")
+        def on_created(o):
+            self.orders[order.id] = o
+
+        pair = AssetPair(AssetAmount(order.asset1_amount, order.asset1_type), AssetAmount(order.asset2_amount, order.asset2_type))
+        ensure_future(node.overlay.create_bid(pair, order.timeout // 1000)).add_done_callback(on_created)
+
+    def cancel_order(self, node, order):
+        print("Cancel order")
+        if order.id not in self.orders:
+            raise RuntimeError("Order not found!")
+        ensure_future(node.overlay.cancel_order(self.orders[order.id]))
+
+    def create_wallet_if_required(self, node, order):
+        if order.asset1_type not in node.overlay.wallets:
+            node.overlay.wallets[order.asset1_type] = SimulationWallet(order.asset1_type)
+        if order.asset2_type not in node.overlay.wallets:
+            node.overlay.wallets[order.asset2_type] = SimulationWallet(order.asset2_type)
+
+    def schedule_scenario_actions(self):
+        """
+        Schedule all the actions in the scenario in the reactor.
+        """
+        for order in self.scenario.orders:
+            node = self.nodes[self.scenario.user_to_index_map[order.user_id]]
+            if order.type == "cancel":
+                self.loop.call_later(order.timestamp / 1000, self.cancel_order, node, order)
+            elif order.type == "ask":
+                self.create_wallet_if_required(node, order)
+                self.loop.call_later(order.timestamp / 1000, self.create_ask, node, order)
+            elif order.type == "bid":
+                self.create_wallet_if_required(node, order)
+                self.loop.call_later(order.timestamp / 1000, self.create_bid, node, order)
 
     def setup_directories(self):
         if os.path.exists(self.data_dir):
@@ -44,8 +96,7 @@ class AnyDexSimulation:
     def ipv8_discover_peers(self):
         # Let nodes discover each other
         for node_a in self.nodes:
-            connect_nodes = random.sample(self.nodes, min(100, len(self.nodes)))
-            for node_b in connect_nodes:
+            for node_b in self.nodes:
                 if node_a == node_b:
                     continue
 
@@ -87,23 +138,73 @@ class AnyDexSimulation:
 
         return total_bytes_up, total_bytes_down
 
-    def start_simulation(self, run_yappi=False):
+    def get_node_index_of_trader(self, trader_id):
+        for index, node in enumerate(self.nodes):
+            if node.overlay.mid == bytes(trader_id):
+                return index
+        return -1
+
+    def collect_simulation_results(self):
+        self.write_bandwidth_statistics()
+
+        # Write away the order books
+        order_books_dir = os.path.join(self.data_dir, "order_books")
+        os.makedirs(order_books_dir, exist_ok=True)
+        for index, node in enumerate(self.nodes):
+            if node.overlay.is_matchmaker:
+                with open(os.path.join(order_books_dir, "%d.txt" % index), "w") as ob_file:
+                    ob_file.write(str(node.overlay.order_book))
+
+        # Write away all the transactions
+        transactions = []
+        for index, node in enumerate(self.nodes):
+            for transaction in node.overlay.transaction_manager.find_all():
+                partner_peer_id = self.get_node_index_of_trader(transaction.partner_order_id.trader_id)
+                if partner_peer_id < index:
+                    transactions.append((int(transaction.timestamp) / 1000.0,
+                                transaction.transferred_assets.first.amount,
+                                transaction.transferred_assets.second.amount,
+                                len(transaction.payments), index, partner_peer_id))
+
+        transactions = sorted(transactions, key=lambda x: x[0])
+
+        with open(os.path.join(self.data_dir, 'transactions.log'), 'w') as transactions_file:
+            transactions_file.write("time,assets1,assets2,payments,peer1,peer2\n")
+            for transaction in transactions:
+                transactions_file.write("%s,%s,%s,%s,%s,%s\n" % transaction)
+
+        # Write orders
+        with open(os.path.join(self.data_dir, 'orders.log'), 'w') as orders_file:
+            orders_file.write("time,id,peer,is_ask,completed,price,quantity,reserved_quantity,traded_quantity,completed_time\n")
+            for index, node in enumerate(self.nodes):
+                for order in node.overlay.order_manager.order_repository.find_all():
+                    order_data = (int(order.timestamp) / 1000.0, order.order_id, index,
+                                  'ask' if order.is_ask() else 'bid',
+                                  'complete' if order.is_complete() else 'incomplete',
+                                  order.assets.first.amount, order.assets.second.amount, order.reserved_quantity,
+                                  order.traded_quantity,
+                                  (int(order.completed_timestamp) / 1000.0) if order.is_complete() else '-1')
+                    orders_file.write("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" % order_data)
+
+        # Write items in the matching queue
+        with open(os.path.join(self.data_dir, 'match_queue.txt'), 'w') as queue_file:
+            queue_file.write("peer_id,order_id,retries,price,other_order_id\n")
+            for index, node in enumerate(self.nodes):
+                for match_cache in node.overlay.get_match_caches():
+                    for retries, price, other_order_id in match_cache.queue.queue:
+                        queue_file.write("%d,%s,%d,%s,%s\n" % (index, match_cache.order.order_id, retries, price, other_order_id))
+
+    async def start_simulation(self, run_yappi=False):
         print("Starting simulation with %d peers..." % self.settings.peers)
 
         if run_yappi:
             yappi.start(builtins=True)
 
         start_time = time.time()
-
-        # TODO stuff
-
-        self.write_bandwidth_statistics()
-
-        # Write total experiment duration
-        with open(os.path.join(self.data_dir, "duration.txt"), "w") as out_file:
-            out_file.write("%d" % self.env.now)
-
+        await asyncio.sleep(434720 + 3600)
         print("Simulation took %f seconds" % (time.time() - start_time))
+
+        self.collect_simulation_results()
 
         if run_yappi:
             yappi.stop()
@@ -111,12 +212,13 @@ class AnyDexSimulation:
             yappi_stats.sort("tsub")
             yappi_stats.save("yappi.stats", type='callgrind')
 
-    def run(self, yappi=False):
+        self.loop.stop()
+
+    async def run(self, yappi=False):
         self.setup_directories()
         self.start_ipv8_nodes()
         self.ipv8_discover_peers()
+        if self.settings.scenario_file:
+            self.schedule_scenario_actions()
 
-        ensure_future(self.nodes[0].overlay.create_ask(AssetPair(AssetAmount(1, 'DUM1'), AssetAmount(2, 'DUM2')), 3600))
-        ensure_future(self.nodes[1].overlay.create_bid(AssetPair(AssetAmount(1, 'DUM1'), AssetAmount(2, 'DUM2')), 3600))
-
-        self.start_simulation(run_yappi=yappi)
+        await self.start_simulation(run_yappi=yappi)
