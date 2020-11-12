@@ -19,6 +19,8 @@ class SimulatedMarketCommunity(MarketCommunity):
             log_file = os.path.join(logs_dir, "%s.log" % peer_mid)
             self.trustchain.logger = setup_logger(peer_mid, self.trustchain.__class__.__name__, log_file)
             self.logger = setup_logger(peer_mid, self.__class__.__name__, log_file)
+            for policy in self.clearing_policies:
+                policy.logger = self.logger
 
     def get_ipv8_address(self):
         return self.endpoint.wan_address

@@ -12,7 +12,7 @@ from ipv8.peerdiscovery.network import Network
 
 class SimulatedIPv8(object):
 
-    def __init__(self, sim_settings, data_dir, peer_ind):
+    def __init__(self, sim_settings, data_dir, is_matchmaker=False):
         keypair = default_eccrypto.generate_key("curve25519")
         self.network = Network()
 
@@ -30,8 +30,6 @@ class SimulatedIPv8(object):
 
         dummy_wallet2 = DummyWallet2()
         wallets[dummy_wallet2.get_identifier()] = dummy_wallet2
-
-        is_matchmaker = (peer_ind <= sim_settings.matchmakers)
 
         self.trustchain = TrustChainCommunity(self.my_peer, self.endpoint, self.network, persistence=database, settings=settings)
         self.overlay = SimulatedMarketCommunity(self.my_peer, self.endpoint, self.network, use_database=False,

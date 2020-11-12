@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from binascii import hexlify, unhexlify
 
@@ -11,61 +13,54 @@ from anydex.core.timestamp import Timestamp
 from anydex.core.wallet_address import WalletAddress
 
 
-class TransactionId(object):
+class TransactionId:
     """Immutable class for representing the id of a transaction."""
 
-    def __init__(self, transaction_id):
+    def __init__(self, transaction_id: bytes) -> None:
         """
         :param transaction_id: String representing the transaction id
-        :type transaction_id: bytes
         :raises ValueError: Thrown when one of the arguments are invalid
         """
-        super(TransactionId, self).__init__()
-
         transaction_id = transaction_id if isinstance(transaction_id, bytes) else bytes(transaction_id)
 
         if len(transaction_id) != 32:
             raise ValueError("Transaction ID must be 32 bytes")
 
-        self.transaction_id = transaction_id  # type: bytes
+        self.transaction_id = transaction_id
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "%s" % self.transaction_id
 
-    def __bytes__(self):  # type: () -> bytes
+    def __bytes__(self) -> bytes:
         return self.transaction_id
 
-    def as_hex(self):
+    def as_hex(self) -> str:
         return hexlify(bytes(self)).decode('utf-8')
 
-    def __eq__(self, other):
+    def __eq__(self, other: TransactionId) -> bool:
         return self.transaction_id == other.transaction_id
 
-    def __ne__(self, other):
+    def __ne__(self, other: TransactionId) -> bool:
         return not self.__eq__(other)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self.transaction_id)
 
 
-class Transaction(object):
+class Transaction:
     """Class for representing a transaction between two nodes"""
 
-    def __init__(self, transaction_id, assets, order_id, partner_order_id, timestamp):
+    def __init__(self, transaction_id: TransactionId, assets: AssetPair, order_id: OrderId, partner_order_id: OrderId,
+                 timestamp: Timestamp, is_risky=False) -> None:
         """
         :param transaction_id: An transaction id to identify the order
         :param assets: The asset pair to exchange
         :param order_id: The id of your order for this transaction
         :param partner_order_id: The id of the order of the other party
         :param timestamp: A timestamp when the transaction was created
-        :type transaction_id: TransactionId
-        :type assets: AssetPair
-        :type order_id: OrderId
-        :type partner_order_id: OrderId
-        :type timestamp: Timestamp
+        :param is_risky: Whether this peer is a risky party in the transaction
         """
-        super(Transaction, self).__init__()
-        self._logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(self.__class__.__name__)
 
         self._transaction_id = transaction_id
         self._assets = assets
@@ -80,6 +75,7 @@ class Transaction(object):
         self.partner_incoming_address = None
         self.partner_outgoing_address = None
         self.trading_peer = None
+        self.is_risky = is_risky
 
         self._payments = []
         self._current_payment = 0
@@ -154,7 +150,7 @@ class Transaction(object):
         partner_order_id = OrderId(TraderId(unhexlify(tx_dict["trader_id"])),
                                    OrderNumber(tx_dict["order_number"]))
         return cls(TransactionId(tx_init_block.hash), AssetPair.from_dictionary(tx_dict["assets"]),
-                   order_id, partner_order_id, Timestamp.now())
+                   order_id, partner_order_id, Timestamp.now(), is_risky=True)
 
     @property
     def transaction_id(self):
@@ -218,8 +214,8 @@ class Transaction(object):
         """
         Add a completed payment to this transaction and update its state.
         """
-        self._logger.debug("Adding transferred assets %s to transaction %s",
-                           payment.transferred_assets, self.transaction_id.as_hex())
+        self.logger.debug("Adding transferred assets %s to transaction %s",
+                          payment.transferred_assets, self.transaction_id.as_hex())
         if payment.transferred_assets.asset_id == self.transferred_assets.first.asset_id:
             self.transferred_assets.first += payment.transferred_assets
         else:
@@ -249,7 +245,7 @@ class Transaction(object):
             if self.transferred_assets.second + assets_to_transfer < self.assets.second:
                 assets_to_transfer += (self.assets.second - self.transferred_assets.second - assets_to_transfer)
 
-        self._logger.debug("Returning %s for the next payment", assets_to_transfer)
+        self.logger.debug("Returning %s for the next payment", assets_to_transfer)
         return assets_to_transfer
 
     def is_payment_complete(self):

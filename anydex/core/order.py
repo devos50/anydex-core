@@ -331,7 +331,7 @@ class Order(object):
         :raises TickWasNotReserved: Thrown when the tick was not reserved first
         """
         if order_id not in self._reserved_ticks:
-            raise TickWasNotReserved()
+            return
 
         if self._reserved_quantity >= quantity:
             self._reserved_quantity -= quantity

@@ -35,18 +35,21 @@ class AnyDexSimulation:
         if settings.scenario_file:
             self.scenario = Scenario(settings.scenario_file)
             self.scenario.parse()
-            self.settings.peers = len(self.scenario.unique_users)
+            self.settings.peers = len(self.scenario.unique_users) + 1  # The last peer is the matchmaker
             self.data_dir = os.path.join("data", "n_%d" % (self.settings.peers,))  # Reset the data dir
 
     def start_ipv8_nodes(self):
-        for peer_ind in range(1, self.settings.peers + 1):
+        for peer_ind in range(self.settings.peers):
             if peer_ind % 100 == 0:
                 print("Created %d peers..." % peer_ind)
-            ipv8 = SimulatedIPv8(self.settings, self.data_dir, peer_ind)
+
+            is_matchmaker = (peer_ind == self.settings.peers - 1)
+
+            ipv8 = SimulatedIPv8(self.settings, self.data_dir, is_matchmaker)
             self.nodes.append(ipv8)
 
     def create_ask(self, node, order):
-        print("Created ask")
+        print("Created ask %d" % self.loop.time())
         def on_created(o):
             self.orders[order.id] = o
 
@@ -54,7 +57,7 @@ class AnyDexSimulation:
         ensure_future(node.overlay.create_ask(pair, order.timeout // 1000)).add_done_callback(on_created)
 
     def create_bid(self, node, order):
-        print("Created bid")
+        print("Created bid %d" % self.loop.time())
         def on_created(o):
             self.orders[order.id] = o
 
@@ -64,7 +67,7 @@ class AnyDexSimulation:
     def cancel_order(self, node, order):
         print("Cancel order")
         if order.id not in self.orders:
-            raise RuntimeError("Order not found!")
+            return
         ensure_future(node.overlay.cancel_order(self.orders[order.id]))
 
     def create_wallet_if_required(self, node, order):
@@ -80,13 +83,13 @@ class AnyDexSimulation:
         for order in self.scenario.orders:
             node = self.nodes[self.scenario.user_to_index_map[order.user_id]]
             if order.type == "cancel":
-                self.loop.call_later(order.timestamp / 1000, self.cancel_order, node, order)
+                self.loop.call_at(order.timestamp // 1000, self.cancel_order, node, order)
             elif order.type == "ask":
                 self.create_wallet_if_required(node, order)
-                self.loop.call_later(order.timestamp / 1000, self.create_ask, node, order)
+                self.loop.call_at(order.timestamp // 1000, self.create_ask, node, order)
             elif order.type == "bid":
                 self.create_wallet_if_required(node, order)
-                self.loop.call_later(order.timestamp / 1000, self.create_bid, node, order)
+                self.loop.call_at(order.timestamp // 1000, self.create_bid, node, order)
 
     def setup_directories(self):
         if os.path.exists(self.data_dir):
@@ -201,7 +204,7 @@ class AnyDexSimulation:
             yappi.start(builtins=True)
 
         start_time = time.time()
-        await asyncio.sleep(434720 + 3600)
+        await asyncio.sleep(3894441 + 3600)
         print("Simulation took %f seconds" % (time.time() - start_time))
 
         self.collect_simulation_results()

@@ -1,5 +1,5 @@
 import random
-from asyncio import ensure_future
+from asyncio import ensure_future, get_event_loop
 
 from ipv8.messaging.payload_headers import GlobalTimeDistributionPayload
 from ipv8.requestcache import NumberCache, RandomNumberCache
@@ -9,7 +9,6 @@ from anydex.core.defs import MSG_MATCH_DONE
 from anydex.core.match_queue import MatchPriorityQueue
 from anydex.core.order import OrderId
 from anydex.trustchain.payload import HalfBlockPairPayload
-from anydex.util.asyncio import call_later
 
 
 class MatchCache(NumberCache):
@@ -28,6 +27,7 @@ class MatchCache(NumberCache):
         self.outstanding_requests = []
         self.received_responses_ids = set()
         self.queue = MatchPriorityQueue(self.order)
+        self._logger = self.community.logger
 
     @property
     def timeout_delay(self):
@@ -68,8 +68,7 @@ class MatchCache(NumberCache):
         if not self.schedule_task:
             # Schedule a timer
             self._logger.info("Scheduling batch match of order %s" % str(self.order.order_id))
-            self.schedule_task = call_later(self.community.settings.match_window,
-                                            self.start_process_matches, ignore_errors=True)
+            self.schedule_task = get_event_loop().call_later(self.community.settings.match_window, self.start_process_matches)
         elif self.schedule_task_done and not self.outstanding_requests:
             # If we are currently not processing anything and the schedule task is done, process the matches
             self.process_match()
@@ -79,6 +78,7 @@ class MatchCache(NumberCache):
         Start processing the batch of matches.
         """
         self.schedule_task_done = True
+        self.schedule_task = None
         self._logger.info("Processing incoming matches for order %s", self.order.order_id)
 
         # It could be that the order has already been completed while waiting - we should let the matchmaker know
@@ -155,8 +155,9 @@ class MatchCache(NumberCache):
                 self.has_outstanding_request_with_order_id(other_order_id):
             # Add it to the queue again
             outstanding_request = self.get_outstanding_request_with_order_id(other_order_id)
-            self._logger.debug("Adding entry (%d, %s, %s, %d) to matching queue again", *outstanding_request)
-            self.queue.insert(outstanding_request[0] + 1, outstanding_request[1], outstanding_request[2], outstanding_request[3])
+            if outstanding_request[0] < 10:
+                self._logger.debug("Adding entry (%d, %s, %s, %d) to matching queue again", *outstanding_request)
+                self.queue.insert(outstanding_request[0] + 1, outstanding_request[1], outstanding_request[2], outstanding_request[3])
         elif decline_reason == DeclinedTradeReason.NO_AVAILABLE_QUANTITY and \
                 self.has_outstanding_request_with_order_id(other_order_id):
             # Re-add the item to the queue, with the same priority
@@ -165,8 +166,8 @@ class MatchCache(NumberCache):
 
         self.remove_outstanding_requests_with_order_id(other_order_id)
 
-        if self.order.status == "open":
-            self.process_match()
+        if self.order.status == "open" and not self.schedule_task:
+            self.schedule_task = get_event_loop().call_later(self.community.settings.match_window, self.start_process_matches)
 
     def has_outstanding_request_with_order_id(self, order_id):
         for _, _, item_order_id, _ in self.outstanding_requests:

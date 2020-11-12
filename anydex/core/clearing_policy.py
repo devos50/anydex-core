@@ -44,6 +44,16 @@ class SingleTradeClearingPolicy(ClearingPolicy):
         """
         self.logger.info("Triggering clearing policy for trade with trader %s", trader_id.as_hex())
 
+        # First, check if we are already trading with this counterparty
+        num_outstanding = 0
+        for cache in self.community.get_match_caches():
+            for _, _, other_order_id, _ in cache.outstanding_requests:
+                if other_order_id.trader_id == trader_id:
+                    num_outstanding += 1
+
+        if num_outstanding >= 2:
+            return False
+
         address = await self.community.get_address_for_trader(trader_id)
         if not address:
             self.logger.info("Clearing policy is unable to determine address of trader %s", trader_id.as_hex())
@@ -51,24 +61,24 @@ class SingleTradeClearingPolicy(ClearingPolicy):
 
         # Get the public key of the peer
         peer_pk = await self.community.send_trader_pk_request(trader_id)
+        peer_pk = peer_pk.key_to_bin()
         peer = Peer(peer_pk, address=address)
 
-        blocks = await self.community.trustchain.send_crawl_request(peer, peer_pk.key_to_bin(), -1, -1)
+        blocks = await self.community.trustchain.send_crawl_request(peer, peer_pk, -1, -1)
         if not blocks:
             self.logger.info("Counterparty did not send blocks, failing clearing policy")
             return False
 
-        block = blocks[0]
+        block = blocks[0] if (blocks[0].public_key == peer_pk or len(blocks) == 1) else blocks[1]  # Get the right block
         if block.type not in [b"ask", b"bid", b"cancel_order", b"tx_init", b"tx_payment", b"tx_done"]:
             self.logger.info("Unknown last block type %s, not trading with this counterparty", block.type)
             return False
 
-        # The block must contain a responsibilities array
-        do_trade = block.transaction["responsibilities"] < self.max_concurrent_trades
+        do_trade = block.transaction["risky_trades"] < self.max_concurrent_trades
         if do_trade:
-            self.logger.info("Will trade with trader %s (responsible trades: %d)",
-                             trader_id.as_hex(), block.transaction["responsibilities"])
+            self.logger.info("Will trade with trader %s (risky trades: %d)",
+                             trader_id.as_hex(), block.transaction["risky_trades"])
         else:
-            self.logger.info("Will NOT trade with trader %s (responsible trades: %d)",
-                             trader_id.as_hex(), block.transaction["responsibilities"])
+            self.logger.info("Will NOT trade with trader %s (risky trades: %d)",
+                             trader_id.as_hex(), block.transaction["risky_trades"])
         return do_trade

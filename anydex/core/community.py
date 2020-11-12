@@ -1,5 +1,6 @@
+import os
 import random
-from asyncio import Future, ensure_future, gather
+from asyncio import Future, ensure_future, get_event_loop
 from base64 import b64decode
 from binascii import hexlify, unhexlify
 from functools import wraps
@@ -15,6 +16,7 @@ from ipv8.requestcache import RequestCache
 from ipv8.util import succeed
 
 from anydex.core import DeclineMatchReason, DeclinedTradeReason, MAX_ORDER_TIMEOUT
+from anydex.core.assetamount import AssetAmount
 from anydex.core.assetpair import AssetPair
 from anydex.core.block import MarketBlock
 from anydex.core.bloomfilter import BloomFilter
@@ -228,7 +230,14 @@ class MarketCommunity(Community, BlockListener):
             if not transaction.is_payment_complete():
                 transaction.trading_peer = Peer(block.public_key,
                                                 address=self.lookup_ip(transaction.partner_order_id.trader_id))
-                self.register_anonymous_task('send_payment_%s' % id(transaction), self.send_payment, transaction)
+                #self.register_anonymous_task('send_payment_%s' % id(transaction), self.send_payment, transaction)
+                self.logger.error("COMMIT FRAUD")
+                with open(os.path.join(self.data_dir, "fraud.txt"), "a") as fraud_file:
+                    stolen_assets = block.transaction["payment"]["transferred"]
+                    loop = get_event_loop()
+                    peer_mid = hexlify(self.mid).decode()[-8:]
+                    fraud_file.write("%s,%f,%d,%s\n" % (peer_mid, loop.time(), stolen_assets["amount"], stolen_assets["type"]))
+
         if block.type == b"tx_init":
             # Create a transaction, based on the information in the block
             if not self.transaction_manager.find_by_id(TransactionId(block.hash)):
@@ -254,9 +263,12 @@ class MarketCommunity(Community, BlockListener):
         Return the counter tx, with information on the number of ongoing trades.
         """
         tx = block.transaction.copy()
-        tx["responsibilities"] = len(self.get_responsible_trades(self.my_peer.public_key.key_to_bin(),
-                                                                 is_block_initiator=False,
-                                                                 counter_sign_block=block))
+
+        risky_trades = self.transaction_manager.get_num_risky_trades()
+        if block.type == b"tx_init":
+            risky_trades += 1
+
+        tx["risky_trades"] = risky_trades
 
         if block.type == b"tx_init":
             # Replace wallet addresses
@@ -440,7 +452,7 @@ class MarketCommunity(Community, BlockListener):
         :param block: The TrustChain block containing the transaction initialisation
         """
         if not block.is_valid_tx_init_done_block():
-            self._logger.warning("Invalid tx_init block received!")
+            self._logger.warning("Invalid tx_init block received! %s" % block.transaction)
             return
 
         if self.is_matchmaker:
@@ -752,8 +764,7 @@ class MarketCommunity(Community, BlockListener):
         block_type = b'ask' if tick.is_ask() else b'bid'
         tx_dict = {
             "tick": tick.to_block_dict(),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
-                                                                new_block_type=block_type, is_block_initiator=True)),
+            "risky_trades": self.transaction_manager.get_num_risky_trades(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.create_source_block(block_type=block_type, transaction=tx_dict)
@@ -768,9 +779,7 @@ class MarketCommunity(Community, BlockListener):
         tx_dict = {
             "trader_id": order.order_id.trader_id.as_hex(),
             "order_number": int(order.order_id.order_number),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
-                                                                new_block_type=b'cancel_order',
-                                                                is_block_initiator=True)),
+            "risky_trades": self.transaction_manager.get_num_risky_trades(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.create_source_block(block_type=b'cancel_order', transaction=tx_dict)
@@ -794,9 +803,7 @@ class MarketCommunity(Community, BlockListener):
                 "incoming": incoming_address.address,
                 "outgoing": outgoing_address.address
             },
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
-                                                                new_block_type=b'tx_init',
-                                                                is_block_initiator=True)),
+            "risky_trades": self.transaction_manager.get_num_risky_trades(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -825,10 +832,7 @@ class MarketCommunity(Community, BlockListener):
         """
         tx_dict = {
             "payment": payment.to_dictionary(),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
-                                                                new_block_type=b'tx_payment',
-                                                                block_txid=bytes(payment.transaction_id),
-                                                                is_block_initiator=True)),
+            "risky_trades": self.transaction_manager.get_num_risky_trades(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -851,10 +855,7 @@ class MarketCommunity(Community, BlockListener):
             "ask": ask_order_dict,
             "bid": bid_order_dict,
             "tx": transaction.to_block_dictionary(),
-            "responsibilities": len(self.get_responsible_trades(self.trustchain.my_peer.public_key.key_to_bin(),
-                                                                new_block_type=b'tx_done',
-                                                                block_txid=bytes(transaction.transaction_id),
-                                                                is_block_initiator=True)),
+            "risky_trades": self.transaction_manager.get_num_risky_trades(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -992,8 +993,11 @@ class MarketCommunity(Community, BlockListener):
             self.order_manager.order_repository.update(order)
 
         # Apply the clearing policies and check if we want to trade with this peer in the first place
+        results = []
         futures = [policy.should_trade(other_order_id.trader_id) for policy in self.clearing_policies]
-        results = await gather(*futures, return_exceptions=True)
+        for future in futures:
+            result = await future
+            results.append(result)
 
         should_trade = True
         decline_reason = DeclinedTradeReason.ALREADY_TRADING
@@ -1003,7 +1007,7 @@ class MarketCommunity(Community, BlockListener):
                 should_trade = False
                 break
             elif not result:
-                self.logger.info("Clearing policy failed for order %s - %s", order.order_id, result)
+                self.logger.info("Clearing policy failed for other order %s - %s", other_order_id, result)
                 should_trade = False
                 break
 
@@ -1023,6 +1027,8 @@ class MarketCommunity(Community, BlockListener):
 
     async def propose_trade(self, order: Order, other_order_id: OrderId, propose_quantity: int, other_price: Price) -> None:
         propose_quantity_scaled = AssetPair.from_price(other_price, propose_quantity)
+        if propose_quantity_scaled.second.amount == 0:
+            propose_quantity_scaled.second = AssetAmount(1, propose_quantity_scaled.second.asset_id)
 
         propose_trade = Trade.propose(
             TraderId(self.mid),
@@ -1182,40 +1188,41 @@ class MarketCommunity(Community, BlockListener):
                     self.request_cache.pop("proposed-trade", int(proposal_id.split(':')[1]))
                     request.on_timeout()
 
-        if order.available_quantity == 0:
-            # No quantity available in this order, decline
-            decline_reason = DeclinedTradeReason.ORDER_COMPLETED if order.status == "completed" else DeclinedTradeReason.ORDER_RESERVED
-            declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
-            self.send_decline_trade(declined_trade)
-            return
-
-        # Pre-actively reserve quantity in the order
-        quantity_in_propose = proposed_trade.assets.first.amount
-        should_counter = quantity_in_propose > order.available_quantity
-        reserve_quantity = min(quantity_in_propose, order.available_quantity)
-        order.reserve_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
-        self.order_manager.order_repository.update(order)
-
-        result = await self.should_accept_propose_trade(proposed_trade, order)
-        should_trade, decline_reason = result
-        if not should_trade:
-            declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
-            self.logger.debug("Declined trade made for order id: %s and id: %s "
-                              "(valid? %s, available quantity of order: %s, reserved: %s, traded: %s), reason: %s",
-                              str(declined_trade.order_id), str(declined_trade.recipient_order_id),
-                              order.is_valid(), order.available_quantity, order.reserved_quantity,
-                              order.traded_quantity, decline_reason)
-            self.send_decline_trade(declined_trade)
-            order.release_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
-            self.order_manager.order_repository.update(order)
-        else:
-            if not should_counter:  # Enough quantity left
-                self.accept_proposed_trade(proposed_trade)
-            else:  # Not all quantity can be traded
-                new_pair = order.assets.proportional_downscale(first=reserve_quantity)
-                counter_trade = Trade.counter(TraderId(self.mid), new_pair, Timestamp.now(), proposed_trade)
-                self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
-                self.send_counter_trade(counter_trade)
+        # if order.available_quantity == 0:
+        #     # No quantity available in this order, decline
+        #     decline_reason = DeclinedTradeReason.ORDER_COMPLETED if order.status == "completed" else DeclinedTradeReason.ORDER_RESERVED
+        #     declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
+        #     self.send_decline_trade(declined_trade)
+        #     return
+        #
+        # # Pre-actively reserve quantity in the order
+        # quantity_in_propose = proposed_trade.assets.first.amount
+        # should_counter = quantity_in_propose > order.available_quantity
+        # reserve_quantity = min(quantity_in_propose, order.available_quantity)
+        # order.reserve_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
+        # self.order_manager.order_repository.update(order)
+        #
+        # result = await self.should_accept_propose_trade(proposed_trade, order)
+        # should_trade, decline_reason = result
+        # if not should_trade:
+        #     declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
+        #     self.logger.debug("Declined trade made for order id: %s and id: %s "
+        #                       "(valid? %s, available quantity of order: %s, reserved: %s, traded: %s), reason: %s",
+        #                       str(declined_trade.order_id), str(declined_trade.recipient_order_id),
+        #                       order.is_valid(), order.available_quantity, order.reserved_quantity,
+        #                       order.traded_quantity, decline_reason)
+        #     self.send_decline_trade(declined_trade)
+        #     order.release_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
+        #     self.order_manager.order_repository.update(order)
+        # else:
+        #     if not should_counter:  # Enough quantity left
+        #         self.accept_proposed_trade(proposed_trade)
+        #     else:  # Not all quantity can be traded
+        #         new_pair = order.assets.proportional_downscale(first=reserve_quantity)
+        #         counter_trade = Trade.counter(TraderId(self.mid), new_pair, Timestamp.now(), proposed_trade)
+        #         self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
+        #         self.send_counter_trade(counter_trade)
+        self.accept_proposed_trade(proposed_trade)
 
     async def should_accept_propose_trade(self, proposed_trade: ProposedTrade, my_order: Order) -> Tuple[bool, DeclinedTradeReason]:
         # First, check some basic conditions
@@ -1239,7 +1246,10 @@ class MarketCommunity(Community, BlockListener):
 
         # Invoke the clearing policies.
         futures = [policy.should_trade(proposed_trade.trader_id) for policy in self.clearing_policies]
-        results = await gather(*futures, return_exceptions=True)
+        results = []
+        for future in futures:
+            result = await future
+            results.append(result)
         should_trade = all([result and not isinstance(result, Exception) for result in results])
         decline_reason = None if should_trade else DeclinedTradeReason.ALREADY_TRADING
         return should_trade, decline_reason
@@ -1540,65 +1550,6 @@ class MarketCommunity(Community, BlockListener):
         request = self.request_cache.pop("pk-request", payload.identifier)
         self.pk_register[request.trader_id] = peer.public_key
         request.request_future.set_result(peer.public_key)
-
-    def get_responsible_trades(self, peer_pk: bytes, is_block_initiator: bool, new_block_type: bytes = None,
-                               block_txid: bytes = None, counter_sign_block: MarketBlock=None):
-        """
-        Return the set of trades where peer_pk holds responsibility.
-        :param peer_pk: The public key in binary format of the peer that we are verifying.
-        :return: The set with responsible transaction IDs.
-        """
-        tx_status = set()
-
-        # First, check existing blocks
-        blocks = self.trustchain.persistence.get_latest_blocks(peer_pk)
-        blocks = sorted(blocks, key=lambda block: block.sequence_number)
-        for block in blocks:
-            linked = self.trustchain.persistence.get_linked(block)
-            block_pair = (block,) if not linked else (block, linked)
-
-            if len(block_pair) == 2 and block_pair[0].link_sequence_number != 0:
-                # Make sure the block pair is in the right order -> first source block, then linked block
-                block_pair = block_pair[1], block_pair[0]
-
-            if block.type == b'tx_init':
-                # If peer_pk initiated this block, peer_pk holds responsibility in this trade.
-                if block_pair[0].public_key == peer_pk:
-                    tx_status.add(block_pair[0].hash)
-            elif block.type == b'tx_payment':
-                txid = unhexlify(block_pair[0].transaction["payment"]["transaction_id"])
-                # One of the blocks is yours.
-                if len(block_pair) == 1:
-                    # This should be the source block created by peer_pk - this peer is not responsible anymore
-                    tx_status.discard(txid)
-                elif len(block_pair) == 2:
-                    if block_pair[0].public_key == peer_pk:
-                        tx_status.discard(txid)
-                    else:
-                        tx_status.add(txid)
-            elif block.type == b'tx_done':
-                txid = unhexlify(block.transaction["tx"]["transaction_id"])
-                if txid in tx_status:
-                    tx_status.discard(txid)
-
-        # Now we consider what happens when adding the new block
-        if is_block_initiator:
-            if new_block_type == b'tx_init':
-                tx_status.add("new_tx")  # We don't have the tx id so just use a bogus transaction id.
-            elif new_block_type == b'tx_payment':
-                tx_status.discard(block_txid)
-            elif new_block_type == b'tx_done':
-                if block_txid in tx_status:
-                    tx_status.discard(block_txid)
-        else:
-            if counter_sign_block.type == b'tx_payment':
-                txid = unhexlify(counter_sign_block.transaction["payment"]["transaction_id"])
-                tx_status.add(txid)
-            elif counter_sign_block.type == b'tx_done':
-                txid = unhexlify(counter_sign_block.transaction["tx"]["transaction_id"])
-                tx_status.discard(txid)
-
-        return tx_status
 
 
 class MarketTestnetCommunity(MarketCommunity):

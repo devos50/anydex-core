@@ -18,6 +18,6 @@ class DeclineMatchReason(object):
     OTHER = 3
 
 
-MAX_ORDER_TIMEOUT = 3600 * 24
+MAX_ORDER_TIMEOUT = 3600 * 24 * 365 * 10
 
 VERSION = 0.1
