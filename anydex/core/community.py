@@ -1,5 +1,6 @@
+import os
 import random
-from asyncio import Future, ensure_future, get_event_loop
+from asyncio import Future, ensure_future, get_event_loop, sleep
 from base64 import b64decode
 from binascii import hexlify, unhexlify
 from functools import wraps
@@ -225,13 +226,12 @@ class MarketCommunity(Community, BlockListener):
             if not transaction.is_payment_complete():
                 transaction.trading_peer = Peer(block.public_key,
                                                 address=self.lookup_ip(transaction.partner_order_id.trader_id))
-                self.register_anonymous_task('send_payment_%s' % id(transaction), self.send_payment, transaction)
-                # self.logger.error("COMMIT FRAUD")
-                # with open(os.path.join(self.data_dir, "fraud.txt"), "a") as fraud_file:
-                #     stolen_assets = block.transaction["payment"]["transferred"]
-                #     loop = get_event_loop()
-                #     peer_mid = hexlify(self.mid).decode()[-8:]
-                #     fraud_file.write("%s,%f,%d,%s\n" % (peer_mid, loop.time(), stolen_assets["amount"], stolen_assets["type"]))
+                #self.register_anonymous_task('send_payment_%s' % id(transaction), self.send_payment, transaction)
+                with open(os.path.join(self.data_dir, "fraud.txt"), "a") as fraud_file:
+                    stolen_assets = block.transaction["payment"]["transferred"]
+                    self.logger.error("COMMIT FRAUD: %s" % stolen_assets)
+                    loop = get_event_loop()
+                    fraud_file.write("%s,%f,%d,%s\n" % (self.peer_id, loop.time(), stolen_assets["amount"], stolen_assets["type"]))
 
         if block.type == b"tx_init":
             # Create a transaction, based on the information in the block
@@ -989,7 +989,7 @@ class MarketCommunity(Community, BlockListener):
         # Add the match to the cache and process it
         cache.add_match(payload)
 
-    async def entrust_prospective_counterparty(self, order: Order, trader_id: TraderId, quantity: int) -> Tuple[bool, int]:
+    async def entrust_prospective_counterparty(self, order: Order, trader_id: TraderId, assets: AssetPair) -> Tuple[bool, int]:
         """
         Check the entrust limits of the counterparty.
         Return whether we want to trade with the counterparty and if so, how many payments would be required.
@@ -999,6 +999,9 @@ class MarketCommunity(Community, BlockListener):
         if not address:
             self.logger.info("Entrust policy is unable to determine address of trader %s", trader_id.as_hex())
             return False, 0
+
+        # Wait a small, random period to avoid getting the non-latest state
+        await sleep(random.random(), loop=get_event_loop())
 
         # Get the public key of the peer
         peer_pk = await self.send_trader_pk_request(trader_id)
@@ -1024,15 +1027,13 @@ class MarketCommunity(Community, BlockListener):
 
         trading_residue = self.settings.entrust_limit - entrusted
 
-        asset_id_to_trade = order.assets.first.asset_id
-        if asset_id_to_trade not in CONVERSION_RATES:
-            raise RuntimeError("Conversion rate for asset %s not found!" % asset_id_to_trade)
-        value_to_trade = quantity / 10 ** CONVERSION_RATES[asset_id_to_trade][0] * CONVERSION_RATES[asset_id_to_trade][
-            1]
+        outgoing_assets = assets.first if order.is_ask() else assets.second
+        if outgoing_assets.asset_id not in CONVERSION_RATES:
+            raise RuntimeError("Conversion rate for asset %s not found!" % outgoing_assets.asset_id)
+        value_to_trade = outgoing_assets.amount/10 ** CONVERSION_RATES[outgoing_assets.asset_id][0] * CONVERSION_RATES[outgoing_assets.asset_id][1]
 
         if trading_residue <= 0:
-            self.logger.info("Will NOT trade with trader %s (residue: %d, value to trade: %d)",
-                             trader_id.as_hex(), trading_residue, value_to_trade)
+            self.logger.info("Will NOT trade with trader %s (trading residue negative or zero)", trader_id.as_hex())
             return False, 0
 
         # There is some residue left. Compute the number of incremental payments required for the trade to remain under
@@ -1073,7 +1074,10 @@ class MarketCommunity(Community, BlockListener):
         do_entrust = True
         num_payments = 1
         if self.settings.entrust_limit != -1:
-            do_entrust, num_payments = await self.entrust_prospective_counterparty(order, other_order_id.trader_id, propose_quantity)
+            propose_quantity_scaled = AssetPair.from_price(other_price, propose_quantity)
+            if propose_quantity_scaled.second.amount == 0:
+                propose_quantity_scaled.second = AssetAmount(1, propose_quantity_scaled.second.asset_id)
+            do_entrust, num_payments = await self.entrust_prospective_counterparty(order, other_order_id.trader_id, propose_quantity_scaled)
 
         decline_reason = DeclinedTradeReason.ALREADY_TRADING
         if not do_entrust:
@@ -1255,47 +1259,48 @@ class MarketCommunity(Community, BlockListener):
                     self.request_cache.pop("proposed-trade", int(proposal_id.split(':')[1]))
                     request.on_timeout()
 
-        if order.available_quantity == 0:
-            # No quantity available in this order, decline
-            decline_reason = DeclinedTradeReason.ORDER_COMPLETED if order.status == "completed" else DeclinedTradeReason.ORDER_RESERVED
-            declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
-            self.send_decline_trade(declined_trade)
-            return
-
-        # Pre-actively reserve quantity in the order
-        quantity_in_propose = proposed_trade.assets.first.amount
-        should_counter = quantity_in_propose > order.available_quantity
-        reserve_quantity = min(quantity_in_propose, order.available_quantity)
-        order.reserve_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
-        self.order_manager.order_repository.update(order)
-
-        result = await self.should_accept_propose_trade(proposed_trade, order)
-        should_trade, decline_reason = result
-        if not should_trade:
-            self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
-        else:
-            if not should_counter:  # Enough quantity left
-                self.accept_proposed_trade(proposed_trade)
-            else:
-                # Not all quantity can be traded, so we are going to make a counter trade.
-                # This will mean that we will become the risky party, so we have to verify the entrust limits.
-                do_entrust = True
-                num_payments = 1
-                if self.settings.entrust_limit != -1:
-                    do_entrust, num_payments = await self.entrust_prospective_counterparty(order,
-                                                                                           proposed_trade.order_id.trader_id,
-                                                                                           reserve_quantity)
-                    if num_payments >= self.settings.max_payments_per_trade:
-                        # The resulting trade would result in too many payments - decline.
-                        self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
-
-                if do_entrust:
-                    new_pair = order.assets.proportional_downscale(first=reserve_quantity)
-                    counter_trade = Trade.counter(TraderId(self.mid), new_pair, num_payments, Timestamp.now(), proposed_trade)
-                    self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
-                    self.send_counter_trade(counter_trade)
-                else:
-                    self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
+        # if order.available_quantity == 0:
+        #     # No quantity available in this order, decline
+        #     decline_reason = DeclinedTradeReason.ORDER_COMPLETED if order.status == "completed" else DeclinedTradeReason.ORDER_RESERVED
+        #     declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
+        #     self.send_decline_trade(declined_trade)
+        #     return
+        #
+        # # Pre-actively reserve quantity in the order
+        # quantity_in_propose = proposed_trade.assets.first.amount
+        # should_counter = quantity_in_propose > order.available_quantity
+        # reserve_quantity = min(quantity_in_propose, order.available_quantity)
+        # order.reserve_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
+        # self.order_manager.order_repository.update(order)
+        #
+        # result = await self.should_accept_propose_trade(proposed_trade, order)
+        # should_trade, decline_reason = result
+        # if not should_trade:
+        #     self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
+        # else:
+        #     if not should_counter:  # Enough quantity left
+        #         self.accept_proposed_trade(proposed_trade)
+        #     else:
+        #         # Not all quantity can be traded, so we are going to make a counter trade.
+        #         # This will mean that we will become the risky party, so we have to verify the entrust limits.
+        #         do_entrust = True
+        #         num_payments = 1
+        #         if self.settings.entrust_limit != -1:
+        #             do_entrust, num_payments = await self.entrust_prospective_counterparty(order,
+        #                                                                                    proposed_trade.order_id.trader_id,
+        #                                                                                    reserve_quantity)
+        #             if num_payments >= self.settings.max_payments_per_trade:
+        #                 # The resulting trade would result in too many payments - decline.
+        #                 self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
+        #
+        #         if do_entrust:
+        #             new_pair = order.assets.proportional_downscale(first=reserve_quantity)
+        #             counter_trade = Trade.counter(TraderId(self.mid), new_pair, num_payments, Timestamp.now(), proposed_trade)
+        #             self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
+        #             self.send_counter_trade(counter_trade)
+        #         else:
+        #             self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
+        self.accept_proposed_trade(proposed_trade)
 
     def decline_proposed_trade(self, order, proposed_trade, decline_reason, reserve_quantity):
         declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)

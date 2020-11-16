@@ -9,6 +9,7 @@ import yappi
 
 from anydex.simulation.discrete_loop import EventSimulatorLoop
 from anydex.simulation.ipv8 import SimulatedIPv8
+from anydex.core import CONVERSION_RATES
 from anydex.core.assetamount import AssetAmount
 from anydex.core.assetpair import AssetPair
 from anydex.core.message import TraderId
@@ -45,27 +46,45 @@ class AnyDexSimulation:
 
             is_matchmaker = (peer_ind == self.settings.peers - 1)
 
-            ipv8 = SimulatedIPv8(self.settings, self.data_dir, is_matchmaker)
+            peer_id = ""
+            if peer_ind in self.scenario.index_to_user_map:
+                peer_id = self.scenario.index_to_user_map[peer_ind]
+
+            ipv8 = SimulatedIPv8(self.settings, self.data_dir, is_matchmaker, peer_id)
             self.nodes.append(ipv8)
 
     def create_ask(self, node, order):
-        print("Created ask %d" % self.loop.time())
         def on_created(o):
             self.orders[order.id] = o
+
+        if order.asset1_type not in CONVERSION_RATES:
+            print("Not creating ask due to missing conversion rate for asset %s!" % order.asset1_type)
+            return
+        if order.asset2_type not in CONVERSION_RATES:
+            print("Not creating ask due to missing conversion rate for asset %s!" % order.asset2_type)
+            return
 
         pair = AssetPair(AssetAmount(order.asset1_amount, order.asset1_type), AssetAmount(order.asset2_amount, order.asset2_type))
         ensure_future(node.overlay.create_ask(pair, order.timeout // 1000)).add_done_callback(on_created)
+        print("%d - Created ask" % self.loop.time())
 
     def create_bid(self, node, order):
-        print("Created bid %d" % self.loop.time())
         def on_created(o):
             self.orders[order.id] = o
 
+        if order.asset1_type not in CONVERSION_RATES:
+            print("Not creating bid due to missing conversion rate for asset %s!" % order.asset1_type)
+            return
+        if order.asset2_type not in CONVERSION_RATES:
+            print("Not creating bid due to missing conversion rate for asset %s!" % order.asset2_type)
+            return
+
         pair = AssetPair(AssetAmount(order.asset1_amount, order.asset1_type), AssetAmount(order.asset2_amount, order.asset2_type))
         ensure_future(node.overlay.create_bid(pair, order.timeout // 1000)).add_done_callback(on_created)
+        print("%d - Created bid" % self.loop.time())
 
     def cancel_order(self, node, order):
-        print("Cancel order")
+        print("%d - Cancelling order" % self.loop.time())
         if order.id not in self.orders:
             return
         ensure_future(node.overlay.cancel_order(self.orders[order.id]))
@@ -167,7 +186,7 @@ class AnyDexSimulation:
                     transactions.append((int(transaction.timestamp) / 1000.0,
                                 transaction.transferred_assets.first.amount,
                                 transaction.transferred_assets.second.amount,
-                                len(transaction.payments), index, partner_peer_id))
+                                transaction.num_payments, index, partner_peer_id))
 
         transactions = sorted(transactions, key=lambda x: x[0])
 
@@ -194,8 +213,8 @@ class AnyDexSimulation:
             queue_file.write("peer_id,order_id,retries,price,other_order_id\n")
             for index, node in enumerate(self.nodes):
                 for match_cache in node.overlay.get_match_caches():
-                    for retries, price, other_order_id in match_cache.queue.queue:
-                        queue_file.write("%d,%s,%d,%s,%s\n" % (index, match_cache.order.order_id, retries, price, other_order_id))
+                    for retries, price, other_order_id, quantity in match_cache.queue.queue:
+                        queue_file.write("%d,%s,%d,%s,%s,%d\n" % (index, match_cache.order.order_id, retries, price, other_order_id, quantity))
 
     async def start_simulation(self, run_yappi=False):
         print("Starting simulation with %d peers..." % self.settings.peers)

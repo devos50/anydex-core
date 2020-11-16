@@ -34,5 +34,5 @@ class PySimEndpoint(AutoMockEndpoint):
             raise AssertionError("Received data from unregistered address %s" % repr(socket_address))
 
     def send(self, socket_address, packet):
-        delay = random.random() * 0.1
+        delay = 0
         ensure_future(self.delayed_send(delay, socket_address, packet))

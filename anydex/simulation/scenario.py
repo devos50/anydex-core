@@ -8,6 +8,7 @@ class Scenario:
         self.orders = []
         self.unique_users = set()
         self.user_to_index_map = {}
+        self.index_to_user_map = {}
 
     def parse(self):
         """
@@ -23,3 +24,4 @@ class Scenario:
 
         for index, user_id in enumerate(list(self.unique_users)):
             self.user_to_index_map[user_id] = index
+            self.index_to_user_map[index] = user_id
