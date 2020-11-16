@@ -5,7 +5,7 @@ import os
 
 from anydex.core import CONVERSION_RATES
 
-FRAUD_FILE = "../../data/n_545/fraud.txt"
+FRAUD_FILE = "../../data/n_677/fraud.txt"
 BTS_USD = 0.01899240
 
 stolen_per_user = {}
