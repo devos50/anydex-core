@@ -111,7 +111,7 @@ class MarketBlock(TrustChainBlock):
         Verify whether a dictionary that contains a transaction, is valid.
         """
         required_fields = ['trader_id', 'order_number', 'partner_trader_id', 'partner_order_number', 'transaction_id',
-                           'assets', 'transferred', 'timestamp']
+                           'assets', 'transferred', 'num_payments', 'timestamp']
         if not MarketBlock.has_fields(required_fields, tx):
             return False
         if len(tx) != len(required_fields):

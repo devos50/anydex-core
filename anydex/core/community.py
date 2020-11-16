@@ -271,8 +271,8 @@ class MarketCommunity(Community, BlockListener):
 
             # We have to manually add the assets of the upcoming trade since the transaction will only be created
             # after counter-signing the incoming tx_init block.
-            incoming_assets = order.assets.second if order.is_ask() else order.assets.first
-            # TODO consider incremental payments
+            incoming_assets = tx["tx"]["assets"]["second"] if order.is_ask() else tx["tx"]["assets"]["first"]
+            incoming_assets = AssetAmount(ceil(incoming_assets["amount"] / tx["tx"]["payments"]), incoming_assets["type"])
             if incoming_assets.asset_id not in entrusted_assets:
                 entrusted_assets[incoming_assets.asset_id] = 0
             entrusted_assets[incoming_assets.asset_id] += incoming_assets.amount
@@ -291,7 +291,7 @@ class MarketCommunity(Community, BlockListener):
                 # Find out which assets we will receive
                 tx_order = self.order_manager.order_repository.find_by_id(transaction.order_id)
                 incoming_assets = transaction.assets.second if tx_order.is_ask() else transaction.assets.first
-                # TODO consider incremental payments
+                incoming_assets = AssetAmount(ceil(incoming_assets.amount / transaction.num_payments), incoming_assets.asset_id)
                 if incoming_assets.asset_id not in entrusted_assets:
                     entrusted_assets[incoming_assets.asset_id] = 0
                 entrusted_assets[incoming_assets.asset_id] += incoming_assets.amount
@@ -1023,7 +1023,6 @@ class MarketCommunity(Community, BlockListener):
             entrusted += (asset_amount / 10 ** CONVERSION_RATES[asset_id][0] * CONVERSION_RATES[asset_id][1])
 
         trading_residue = self.settings.entrust_limit - entrusted
-        # TODO consider incremental payments
 
         asset_id_to_trade = order.assets.first.asset_id
         if asset_id_to_trade not in CONVERSION_RATES:
