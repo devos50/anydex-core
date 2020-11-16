@@ -3,7 +3,7 @@ Parse all fraud instances
 """
 import os
 
-FRAUD_FILE = "../../data/n_545/fraud.txt"
+FRAUD_FILE = "../../data/n_3/fraud.txt"
 BTS_USD = 0.01899240
 
 asset_info = {  # (precision, USD price)
@@ -32,7 +32,8 @@ asset_info = {  # (precision, USD price)
     "1.3.658": (4, 0.01 * BTS_USD),
     "1.3.616": (6, 1000 * BTS_USD),
     "1.3.556": (0, 49 * BTS_USD),
-    "1.3.614": (6, 1 * BTS_USD)
+    "1.3.614": (6, 1 * BTS_USD),
+    "1.3.861": (8, 447501 * BTS_USD)
 }
 stolen = {}
 stolen_times = {}

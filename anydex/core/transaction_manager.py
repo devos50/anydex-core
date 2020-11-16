@@ -21,13 +21,3 @@ class TransactionManager:
 
     def find_all(self) -> List[Transaction]:
         return self.transaction_repository.find_all()
-
-    def get_num_risky_trades(self) -> int:
-        """
-        Get the number of risky trades
-        """
-        num_risky = 0
-        for transaction in self.find_all():
-            if transaction.is_risky:
-                num_risky += 1
-        return num_risky

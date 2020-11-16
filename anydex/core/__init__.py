@@ -21,3 +21,11 @@ class DeclineMatchReason(object):
 MAX_ORDER_TIMEOUT = 3600 * 24 * 365 * 10
 
 VERSION = 0.1
+
+
+# Conversion rates
+CONVERSION_RATES = {
+    "MB": (1, 1),
+    "DUM1": (0, 1),
+    "DUM2": (0, 1),
+}

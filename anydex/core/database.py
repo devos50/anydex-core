@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS orders(
   asset2_amount            BIGINT NOT NULL,
   asset2_type              TEXT NOT NULL,
   asset2_transferred       BIGINT NOT NULL,
+  num_payments             INTEGER NOT NULL,
   transaction_timestamp    BIGINT NOT NULL,
   incoming_address         TEXT NOT NULL,
   outgoing_address         TEXT NOT NULL,
@@ -222,9 +223,9 @@ class MarketDB(TrustChainDB):
         self.execute(
             u"INSERT INTO transactions (trader_id, transaction_id, order_number,"
             u"partner_trader_id, partner_order_number, asset1_amount, asset1_type, asset1_transferred, asset2_amount,"
-            u"asset2_type, asset2_transferred, transaction_timestamp,"
+            u"asset2_type, asset2_transferred, transaction_timestamp, num_payments,"
             u"incoming_address, outgoing_address, partner_incoming_address, partner_outgoing_address) "
-            u"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", transaction.to_database())
+            u"VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", transaction.to_database())
         self.commit()
 
         self.delete_payments(transaction.transaction_id)

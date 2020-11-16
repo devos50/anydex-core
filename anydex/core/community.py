@@ -1,9 +1,9 @@
-import os
 import random
 from asyncio import Future, ensure_future, get_event_loop
 from base64 import b64decode
 from binascii import hexlify, unhexlify
 from functools import wraps
+from math import ceil
 from typing import Dict, List, Optional, Tuple
 
 from ipv8.community import Community, lazy_wrapper
@@ -15,14 +15,13 @@ from ipv8.peer import Peer
 from ipv8.requestcache import RequestCache
 from ipv8.util import succeed
 
-from anydex.core import DeclineMatchReason, DeclinedTradeReason, MAX_ORDER_TIMEOUT
+from anydex.core import DeclineMatchReason, DeclinedTradeReason, MAX_ORDER_TIMEOUT, CONVERSION_RATES
 from anydex.core.assetamount import AssetAmount
 from anydex.core.assetpair import AssetPair
 from anydex.core.block import MarketBlock
 from anydex.core.bloomfilter import BloomFilter
 from anydex.core.cache import MatchCache, OrderStatusRequestCache, PingRequestCache, ProposedTradeRequestCache,\
     PublicKeyRequestCache
-from anydex.core.clearing_policy import SingleTradeClearingPolicy
 from anydex.core.database import MarketDB
 from anydex.core.defs import *
 from anydex.core.matching_engine import MatchingEngine, PriceTimeStrategy
@@ -102,10 +101,6 @@ class MarketCommunity(Community, BlockListener):
         self.request_cache = RequestCache()
         self.cancelled_orders = set()  # Keep track of cancelled orders so we don't add them again to the orderbook.
         self.sent_matches = set()
-        self.clearing_policies = []
-
-        if self.settings.max_concurrent_trades > 0:
-            self.clearing_policies.append(SingleTradeClearingPolicy(self, self.settings.max_concurrent_trades))
 
         if self.use_database:
             order_repository = DatabaseOrderRepository(self.mid, self.market_database)
@@ -230,13 +225,13 @@ class MarketCommunity(Community, BlockListener):
             if not transaction.is_payment_complete():
                 transaction.trading_peer = Peer(block.public_key,
                                                 address=self.lookup_ip(transaction.partner_order_id.trader_id))
-                #self.register_anonymous_task('send_payment_%s' % id(transaction), self.send_payment, transaction)
-                self.logger.error("COMMIT FRAUD")
-                with open(os.path.join(self.data_dir, "fraud.txt"), "a") as fraud_file:
-                    stolen_assets = block.transaction["payment"]["transferred"]
-                    loop = get_event_loop()
-                    peer_mid = hexlify(self.mid).decode()[-8:]
-                    fraud_file.write("%s,%f,%d,%s\n" % (peer_mid, loop.time(), stolen_assets["amount"], stolen_assets["type"]))
+                self.register_anonymous_task('send_payment_%s' % id(transaction), self.send_payment, transaction)
+                # self.logger.error("COMMIT FRAUD")
+                # with open(os.path.join(self.data_dir, "fraud.txt"), "a") as fraud_file:
+                #     stolen_assets = block.transaction["payment"]["transferred"]
+                #     loop = get_event_loop()
+                #     peer_mid = hexlify(self.mid).decode()[-8:]
+                #     fraud_file.write("%s,%f,%d,%s\n" % (peer_mid, loop.time(), stolen_assets["amount"], stolen_assets["type"]))
 
         if block.type == b"tx_init":
             # Create a transaction, based on the information in the block
@@ -264,12 +259,7 @@ class MarketCommunity(Community, BlockListener):
         """
         tx = block.transaction.copy()
 
-        risky_trades = self.transaction_manager.get_num_risky_trades()
-        if block.type == b"tx_init":
-            risky_trades += 1
-
-        tx["risky_trades"] = risky_trades
-
+        entrusted_assets = self.get_entrusted_assets()
         if block.type == b"tx_init":
             # Replace wallet addresses
             order_id = OrderId(TraderId(unhexlify(tx["tx"]["partner_trader_id"])),
@@ -279,7 +269,34 @@ class MarketCommunity(Community, BlockListener):
             tx["wallets"]["incoming"] = incoming_address.address
             tx["wallets"]["outgoing"] = outgoing_address.address
 
+            # We have to manually add the assets of the upcoming trade since the transaction will only be created
+            # after counter-signing the incoming tx_init block.
+            incoming_assets = order.assets.second if order.is_ask() else order.assets.first
+            # TODO consider incremental payments
+            if incoming_assets.asset_id not in entrusted_assets:
+                entrusted_assets[incoming_assets.asset_id] = 0
+            entrusted_assets[incoming_assets.asset_id] += incoming_assets.amount
+
+        tx["entrusted"] = entrusted_assets
+
         return tx
+
+    def get_entrusted_assets(self) -> Dict:
+        """
+        Return a dictionary with the assets that this user is currently entrusted with, in USD.
+        """
+        entrusted_assets = {}
+        for transaction in self.transaction_manager.find_all():
+            if transaction.is_risky:
+                # Find out which assets we will receive
+                tx_order = self.order_manager.order_repository.find_by_id(transaction.order_id)
+                incoming_assets = transaction.assets.second if tx_order.is_ask() else transaction.assets.first
+                # TODO consider incremental payments
+                if incoming_assets.asset_id not in entrusted_assets:
+                    entrusted_assets[incoming_assets.asset_id] = 0
+                entrusted_assets[incoming_assets.asset_id] += incoming_assets.amount
+
+        return entrusted_assets
 
     def enable_matchmaker(self) -> None:
         """
@@ -764,7 +781,7 @@ class MarketCommunity(Community, BlockListener):
         block_type = b'ask' if tick.is_ask() else b'bid'
         tx_dict = {
             "tick": tick.to_block_dict(),
-            "risky_trades": self.transaction_manager.get_num_risky_trades(),
+            "entrusted": self.get_entrusted_assets(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.create_source_block(block_type=block_type, transaction=tx_dict)
@@ -779,7 +796,7 @@ class MarketCommunity(Community, BlockListener):
         tx_dict = {
             "trader_id": order.order_id.trader_id.as_hex(),
             "order_number": int(order.order_id.order_number),
-            "risky_trades": self.transaction_manager.get_num_risky_trades(),
+            "entrusted": self.get_entrusted_assets(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.create_source_block(block_type=b'cancel_order', transaction=tx_dict)
@@ -803,7 +820,7 @@ class MarketCommunity(Community, BlockListener):
                 "incoming": incoming_address.address,
                 "outgoing": outgoing_address.address
             },
-            "risky_trades": self.transaction_manager.get_num_risky_trades(),
+            "entrusted": self.get_entrusted_assets(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -832,7 +849,7 @@ class MarketCommunity(Community, BlockListener):
         """
         tx_dict = {
             "payment": payment.to_dictionary(),
-            "risky_trades": self.transaction_manager.get_num_risky_trades(),
+            "entrusted": self.get_entrusted_assets(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -855,7 +872,7 @@ class MarketCommunity(Community, BlockListener):
             "ask": ask_order_dict,
             "bid": bid_order_dict,
             "tx": transaction.to_block_dictionary(),
-            "risky_trades": self.transaction_manager.get_num_risky_trades(),
+            "entrusted": self.get_entrusted_assets(),
             "version": self.PROTOCOL_VERSION
         }
         blocks = await self.trustchain.sign_block(peer, peer.public_key.key_to_bin(),
@@ -972,6 +989,65 @@ class MarketCommunity(Community, BlockListener):
         # Add the match to the cache and process it
         cache.add_match(payload)
 
+    async def entrust_prospective_counterparty(self, order: Order, trader_id: TraderId, quantity: int) -> Tuple[bool, int]:
+        """
+        Check the entrust limits of the counterparty.
+        Return whether we want to trade with the counterparty and if so, how many payments would be required.
+        """
+        self.logger.info("Checking entrust values for trader %s", trader_id)
+        address = await self.get_address_for_trader(trader_id)
+        if not address:
+            self.logger.info("Entrust policy is unable to determine address of trader %s", trader_id.as_hex())
+            return False, 0
+
+        # Get the public key of the peer
+        peer_pk = await self.send_trader_pk_request(trader_id)
+        peer_pk = peer_pk.key_to_bin()
+        peer = Peer(peer_pk, address=address)
+
+        blocks = await self.trustchain.send_crawl_request(peer, peer_pk, -1, -1)
+        if not blocks:
+            self.logger.info("Counterparty did not send blocks, failing entrust policy")
+            return False, 0
+
+        block = blocks[0] if (blocks[0].public_key == peer_pk or len(blocks) == 1) else blocks[1]  # Get the right block
+        if block.type not in [b"ask", b"bid", b"cancel_order", b"tx_init", b"tx_payment", b"tx_done"]:
+            self.logger.info("Unknown last block type %s, not trading with this counterparty", block.type)
+            return False, 0
+
+        # We now compute the total entrusted value by that party and check if we can still trade within the desired window.
+        entrusted = 0
+        for asset_id, asset_amount in block.transaction["entrusted"].items():
+            if asset_id not in CONVERSION_RATES:
+                raise RuntimeError("Conversion rate for asset %s not found!" % asset_id)
+            entrusted += (asset_amount / 10 ** CONVERSION_RATES[asset_id][0] * CONVERSION_RATES[asset_id][1])
+
+        trading_residue = self.settings.entrust_limit - entrusted
+        # TODO consider incremental payments
+
+        asset_id_to_trade = order.assets.first.asset_id
+        if asset_id_to_trade not in CONVERSION_RATES:
+            raise RuntimeError("Conversion rate for asset %s not found!" % asset_id_to_trade)
+        value_to_trade = quantity / 10 ** CONVERSION_RATES[asset_id_to_trade][0] * CONVERSION_RATES[asset_id_to_trade][
+            1]
+
+        if trading_residue <= 0:
+            self.logger.info("Will NOT trade with trader %s (residue: %d, value to trade: %d)",
+                             trader_id.as_hex(), trading_residue, value_to_trade)
+            return False, 0
+
+        # There is some residue left. Compute the number of incremental payments required for the trade to remain under
+        # the residue.
+        payments_required = ceil(value_to_trade / trading_residue)
+        if payments_required > self.settings.max_payments_per_trade:
+            self.logger.info("Will NOT trade with trader %s, too much payments required (%d)",
+                             trader_id.as_hex(), payments_required)
+            return False, 0
+
+        self.logger.info("Will trade with trader %s (residue: %d, value to trade: %d, payments: %d)",
+                         trader_id.as_hex(), trading_residue, value_to_trade, payments_required)
+        return True, payments_required
+
     async def accept_match_and_propose(self, order: Order, other_order_id: OrderId, other_price: Price,
                                        other_quantity: int, propose_quantity=None, should_reserve=True) -> None:
         """
@@ -992,26 +1068,16 @@ class MarketCommunity(Community, BlockListener):
             order.reserve_quantity_for_tick(other_order_id, propose_quantity)
             self.order_manager.order_repository.update(order)
 
-        # Apply the clearing policies and check if we want to trade with this peer in the first place
-        results = []
-        futures = [policy.should_trade(other_order_id.trader_id) for policy in self.clearing_policies]
-        for future in futures:
-            result = await future
-            results.append(result)
+        # If we are going to send out an incoming proposal that will be accepted, we will become the risktaker in
+        # the upcoming trade (since we have to make the first payment). Therefore, carefully check the entrust limit of
+        # the counterparty.
+        do_entrust = True
+        num_payments = 1
+        if self.settings.entrust_limit != -1:
+            do_entrust, num_payments = await self.entrust_prospective_counterparty(order, other_order_id.trader_id, propose_quantity)
 
-        should_trade = True
         decline_reason = DeclinedTradeReason.ALREADY_TRADING
-        for result in results:
-            if isinstance(result, Exception):
-                self.logger.info("Clearing policy failed with exception for order %s - %s", order.order_id, result)
-                should_trade = False
-                break
-            elif not result:
-                self.logger.info("Clearing policy failed for other order %s - %s", other_order_id, result)
-                should_trade = False
-                break
-
-        if not should_trade:
+        if not do_entrust:
             # Release the quantity again
             order.release_quantity_for_tick(other_order_id, propose_quantity)
             self.order_manager.order_repository.update(order)
@@ -1023,9 +1089,10 @@ class MarketCommunity(Community, BlockListener):
             return
 
         # Otherwise, propose!
-        await self.propose_trade(order, other_order_id, propose_quantity, other_price)
+        await self.propose_trade(order, other_order_id, propose_quantity, other_price, num_payments)
 
-    async def propose_trade(self, order: Order, other_order_id: OrderId, propose_quantity: int, other_price: Price) -> None:
+    async def propose_trade(self, order: Order, other_order_id: OrderId, propose_quantity: int, other_price: Price,
+                            num_payments: int) -> None:
         propose_quantity_scaled = AssetPair.from_price(other_price, propose_quantity)
         if propose_quantity_scaled.second.amount == 0:
             propose_quantity_scaled.second = AssetAmount(1, propose_quantity_scaled.second.asset_id)
@@ -1035,6 +1102,7 @@ class MarketCommunity(Community, BlockListener):
             order.order_id,
             other_order_id,
             propose_quantity_scaled,
+            num_payments,
             Timestamp.now()
         )
 
@@ -1188,43 +1256,60 @@ class MarketCommunity(Community, BlockListener):
                     self.request_cache.pop("proposed-trade", int(proposal_id.split(':')[1]))
                     request.on_timeout()
 
-        # if order.available_quantity == 0:
-        #     # No quantity available in this order, decline
-        #     decline_reason = DeclinedTradeReason.ORDER_COMPLETED if order.status == "completed" else DeclinedTradeReason.ORDER_RESERVED
-        #     declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
-        #     self.send_decline_trade(declined_trade)
-        #     return
-        #
-        # # Pre-actively reserve quantity in the order
-        # quantity_in_propose = proposed_trade.assets.first.amount
-        # should_counter = quantity_in_propose > order.available_quantity
-        # reserve_quantity = min(quantity_in_propose, order.available_quantity)
-        # order.reserve_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
-        # self.order_manager.order_repository.update(order)
-        #
-        # result = await self.should_accept_propose_trade(proposed_trade, order)
-        # should_trade, decline_reason = result
-        # if not should_trade:
-        #     declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
-        #     self.logger.debug("Declined trade made for order id: %s and id: %s "
-        #                       "(valid? %s, available quantity of order: %s, reserved: %s, traded: %s), reason: %s",
-        #                       str(declined_trade.order_id), str(declined_trade.recipient_order_id),
-        #                       order.is_valid(), order.available_quantity, order.reserved_quantity,
-        #                       order.traded_quantity, decline_reason)
-        #     self.send_decline_trade(declined_trade)
-        #     order.release_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
-        #     self.order_manager.order_repository.update(order)
-        # else:
-        #     if not should_counter:  # Enough quantity left
-        #         self.accept_proposed_trade(proposed_trade)
-        #     else:  # Not all quantity can be traded
-        #         new_pair = order.assets.proportional_downscale(first=reserve_quantity)
-        #         counter_trade = Trade.counter(TraderId(self.mid), new_pair, Timestamp.now(), proposed_trade)
-        #         self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
-        #         self.send_counter_trade(counter_trade)
-        self.accept_proposed_trade(proposed_trade)
+        if order.available_quantity == 0:
+            # No quantity available in this order, decline
+            decline_reason = DeclinedTradeReason.ORDER_COMPLETED if order.status == "completed" else DeclinedTradeReason.ORDER_RESERVED
+            declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
+            self.send_decline_trade(declined_trade)
+            return
 
-    async def should_accept_propose_trade(self, proposed_trade: ProposedTrade, my_order: Order) -> Tuple[bool, DeclinedTradeReason]:
+        # Pre-actively reserve quantity in the order
+        quantity_in_propose = proposed_trade.assets.first.amount
+        should_counter = quantity_in_propose > order.available_quantity
+        reserve_quantity = min(quantity_in_propose, order.available_quantity)
+        order.reserve_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
+        self.order_manager.order_repository.update(order)
+
+        result = await self.should_accept_propose_trade(proposed_trade, order)
+        should_trade, decline_reason = result
+        if not should_trade:
+            self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
+        else:
+            if not should_counter:  # Enough quantity left
+                self.accept_proposed_trade(proposed_trade)
+            else:
+                # Not all quantity can be traded, so we are going to make a counter trade.
+                # This will mean that we will become the risky party, so we have to verify the entrust limits.
+                do_entrust = True
+                num_payments = 1
+                if self.settings.entrust_limit != -1:
+                    do_entrust, num_payments = await self.entrust_prospective_counterparty(order,
+                                                                                           proposed_trade.order_id.trader_id,
+                                                                                           reserve_quantity)
+                    if num_payments >= self.settings.max_payments_per_trade:
+                        # The resulting trade would result in too many payments - decline.
+                        self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
+
+                if do_entrust:
+                    new_pair = order.assets.proportional_downscale(first=reserve_quantity)
+                    counter_trade = Trade.counter(TraderId(self.mid), new_pair, num_payments, Timestamp.now(), proposed_trade)
+                    self.logger.debug("Counter trade made with asset pair %s for proposed trade", counter_trade.assets)
+                    self.send_counter_trade(counter_trade)
+                else:
+                    self.decline_proposed_trade(order, proposed_trade, decline_reason, reserve_quantity)
+
+    def decline_proposed_trade(self, order, proposed_trade, decline_reason, reserve_quantity):
+        declined_trade = Trade.decline(TraderId(self.mid), Timestamp.now(), proposed_trade, decline_reason)
+        self.logger.debug("Declined trade made for order id: %s and id: %s "
+                          "(valid? %s, available quantity of order: %s, reserved: %s, traded: %s), reason: %s",
+                          str(declined_trade.order_id), str(declined_trade.recipient_order_id),
+                          order.is_valid(), order.available_quantity, order.reserved_quantity,
+                          order.traded_quantity, decline_reason)
+        self.send_decline_trade(declined_trade)
+        order.release_quantity_for_tick(proposed_trade.order_id, reserve_quantity)
+        self.order_manager.order_repository.update(order)
+
+    async def should_accept_propose_trade(self, proposed_trade: ProposedTrade, my_order: Order) -> Tuple[bool, Optional[DeclinedTradeReason]]:
         # First, check some basic conditions
         should_trade = False
         decline_reason = DeclinedTradeReason.OTHER
@@ -1244,15 +1329,7 @@ class MarketCommunity(Community, BlockListener):
         if not should_trade:
             return False, decline_reason
 
-        # Invoke the clearing policies.
-        futures = [policy.should_trade(proposed_trade.trader_id) for policy in self.clearing_policies]
-        results = []
-        for future in futures:
-            result = await future
-            results.append(result)
-        should_trade = all([result and not isinstance(result, Exception) for result in results])
-        decline_reason = None if should_trade else DeclinedTradeReason.ALREADY_TRADING
-        return should_trade, decline_reason
+        return True, None
 
     def send_decline_trade(self, declined_trade: DeclinedTrade) -> None:
         payload = declined_trade.to_network()
@@ -1441,7 +1518,7 @@ class MarketCommunity(Community, BlockListener):
     async def send_payment(self, transaction: Transaction) -> None:
         order = self.order_manager.order_repository.find_by_id(transaction.order_id)
 
-        transfer_amount = transaction.next_payment(order.is_ask(), self.settings.transfers_per_trade)
+        transfer_amount = transaction.next_payment(order.is_ask())
         asset_id = transfer_amount.asset_id
 
         wallet = self.wallets[asset_id]

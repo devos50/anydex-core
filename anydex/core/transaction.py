@@ -51,12 +51,13 @@ class Transaction:
     """Class for representing a transaction between two nodes"""
 
     def __init__(self, transaction_id: TransactionId, assets: AssetPair, order_id: OrderId, partner_order_id: OrderId,
-                 timestamp: Timestamp, is_risky=False) -> None:
+                 num_payments: int, timestamp: Timestamp, is_risky=False) -> None:
         """
         :param transaction_id: An transaction id to identify the order
         :param assets: The asset pair to exchange
         :param order_id: The id of your order for this transaction
         :param partner_order_id: The id of the order of the other party
+        :param num_payments: The number of payments in the upcoming trade
         :param timestamp: A timestamp when the transaction was created
         :param is_risky: Whether this peer is a risky party in the transaction
         """
@@ -68,6 +69,7 @@ class Transaction:
                                              AssetAmount(0, assets.second.asset_id))
         self._order_id = order_id
         self._partner_order_id = partner_order_id
+        self._num_payments = num_payments
         self._timestamp = timestamp
 
         self.incoming_address = None
@@ -87,7 +89,7 @@ class Transaction:
         """
         (trader_id, transaction_id, order_number, partner_trader_id, partner_order_number,
          asset1_amount, asset1_type, asset1_transferred, asset2_amount, asset2_type, asset2_transferred,
-         transaction_timestamp, incoming_address, outgoing_address,
+         num_payments, transaction_timestamp, incoming_address, outgoing_address,
          partner_incoming_address, partner_outgoing_address) = data
 
         transaction_id = TransactionId(bytes(transaction_id))
@@ -96,7 +98,7 @@ class Transaction:
                                     AssetAmount(asset2_amount, asset2_type.decode())),
                           OrderId(TraderId(bytes(trader_id)), OrderNumber(order_number)),
                           OrderId(TraderId(bytes(partner_trader_id)), OrderNumber(partner_order_number)),
-                          Timestamp(transaction_timestamp))
+                          num_payments, Timestamp(transaction_timestamp))
 
         transaction._transferred_assets = AssetPair(AssetAmount(asset1_transferred, asset1_type.decode()),
                                                     AssetAmount(asset2_transferred, asset2_type.decode()))
@@ -118,7 +120,7 @@ class Transaction:
                 database_blob(bytes(self.partner_order_id.trader_id)), int(self.partner_order_id.order_number),
                 self.assets.first.amount, str(self.assets.first.asset_id), self.transferred_assets.first.amount,
                 self.assets.second.amount, str(self.assets.second.asset_id),
-                self.transferred_assets.second.amount, int(self.timestamp),
+                self.transferred_assets.second.amount, self.num_payments, int(self.timestamp),
                 str(self.incoming_address), str(self.outgoing_address),
                 str(self.partner_incoming_address), str(self.partner_outgoing_address))
 
@@ -134,7 +136,7 @@ class Transaction:
         :rtype: Transaction
         """
         return cls(transaction_id, accepted_trade.assets, accepted_trade.recipient_order_id,
-                   accepted_trade.order_id, Timestamp.now())
+                   accepted_trade.order_id, accepted_trade.num_payments, Timestamp.now())
 
     @classmethod
     def from_tx_init_block(cls, tx_init_block):
@@ -149,8 +151,9 @@ class Transaction:
                            OrderNumber(tx_dict["partner_order_number"]))
         partner_order_id = OrderId(TraderId(unhexlify(tx_dict["trader_id"])),
                                    OrderNumber(tx_dict["order_number"]))
+        num_payments = tx_dict["payments"]
         return cls(TransactionId(tx_init_block.hash), AssetPair.from_dictionary(tx_dict["assets"]),
-                   order_id, partner_order_id, Timestamp.now(), is_risky=True)
+                   order_id, partner_order_id, num_payments, Timestamp.now(), is_risky=True)
 
     @property
     def transaction_id(self):
@@ -196,6 +199,10 @@ class Transaction:
         return self._payments
 
     @property
+    def num_payments(self):
+        return self._num_payments
+
+    @property
     def timestamp(self):
         """
         :rtype: Timestamp
@@ -222,26 +229,26 @@ class Transaction:
             self.transferred_assets.second += payment.transferred_assets
         self._payments.append(payment)
 
-    def next_payment(self, order_is_ask, transfers_per_trade):
+    def next_payment(self, order_is_ask):
         """
         Return the assets that this user has to send to the counterparty as a next step.
         :param order_is_ask: Whether the order is an ask or not.
         :return: An AssetAmount object, indicating how much we should send to the counterparty.
         """
         if order_is_ask:
-            div_amount_1 = AssetAmount(transfers_per_trade, self.assets.first.asset_id)
+            div_amount_1 = AssetAmount(self.num_payments, self.assets.first.asset_id)
             assets_to_transfer = (self.assets.first // div_amount_1)
         else:
-            div_amount_2 = AssetAmount(transfers_per_trade, self.assets.second.asset_id)
+            div_amount_2 = AssetAmount(self.num_payments, self.assets.second.asset_id)
             assets_to_transfer = (self.assets.second // div_amount_2)
 
         self._current_payment += 1
 
         # Make sure the last (incremental) payment fully covers all transferred assets
-        if self._current_payment == transfers_per_trade and order_is_ask:
+        if self._current_payment == self.num_payments and order_is_ask:
             if self.transferred_assets.first + assets_to_transfer < self.assets.first:
                 assets_to_transfer += (self.assets.first - self.transferred_assets.first - assets_to_transfer)
-        elif self._current_payment == transfers_per_trade and not order_is_ask:
+        elif self._current_payment == self.num_payments and not order_is_ask:
             if self.transferred_assets.second + assets_to_transfer < self.assets.second:
                 assets_to_transfer += (self.assets.second - self.transferred_assets.second - assets_to_transfer)
 
@@ -264,5 +271,6 @@ class Transaction:
             "transaction_id": self.transaction_id.as_hex(),
             "assets": self.assets.to_dictionary(),
             "transferred": self.transferred_assets.to_dictionary(),
+            "num_payments": self.num_payments,
             "timestamp": int(self.timestamp),
         }

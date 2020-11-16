@@ -5,10 +5,10 @@ from ipv8.dht import DHTError
 from ipv8.test.base import TestBase
 from ipv8.test.mocking.ipv8 import MockIPv8
 
+from anydex.core import MAX_ORDER_TIMEOUT
 from anydex.core.assetamount import AssetAmount
 from anydex.core.assetpair import AssetPair
 from anydex.core.block import MarketBlock
-from anydex.core.clearing_policy import SingleTradeClearingPolicy
 from anydex.core.community import MarketCommunity
 from anydex.core.message import TraderId
 from anydex.core.order import Order, OrderId, OrderNumber
@@ -56,9 +56,6 @@ class TestMarketCommunityBase(TestBase):
 
         tc_wallet = TrustchainWallet(mock_ipv8.overlay.trustchain)
         mock_ipv8.overlay.wallets['MB'] = tc_wallet
-
-        mock_ipv8.overlay.settings.max_concurrent_trades = 0
-        mock_ipv8.overlay.clearing_policies = []
 
         return mock_ipv8
 
@@ -302,8 +299,8 @@ class TestMarketCommunity(TestMarketCommunityBase):
         """
         Test trading dummy tokens against bandwidth tokens between two persons, with a matchmaker
         """
-        self.nodes[0].overlay.settings.transfers_per_trade = 3
-        self.nodes[1].overlay.settings.transfers_per_trade = 3
+        self.nodes[0].overlay.settings.entrust_limit = 10
+        self.nodes[1].overlay.settings.entrust_limit = 10
 
         await self.introduce_nodes()
 
@@ -335,7 +332,7 @@ class TestMarketCommunity(TestMarketCommunityBase):
             if block.type == b'tx_payment':
                 count += 1
 
-        self.assertEqual(count, 6)
+        self.assertEqual(count, 10)
 
     async def test_cancel(self):
         """
@@ -461,47 +458,12 @@ class TestMarketCommunity(TestMarketCommunityBase):
         self.assertEqual(len(list(self.nodes[1].overlay.transaction_manager.find_all())), 2)
 
     @timeout(4)
-    async def test_clearing_policy_pending_trade_decline(self):
+    async def test_e2e_trade_with_entrust_limits(self):
         """
-        Test whether we are refusing to trade with a counterparty who is currently involved in another trade
-        We make node 0 malicious, in other words, it does not send a payment back.
+        Test an e2e trade with entrust limits.
         """
-        clearing_policy = SingleTradeClearingPolicy(self.nodes[2].overlay, max_concurrent_trades=1)
-        self.nodes[2].overlay.clearing_policies.append(clearing_policy)
-
-        await self.introduce_nodes()
-
-        # Commit counterparty fraud by not transferring assets to the counterparty
-        transfer_future = Future()
-
-        self.nodes[0].overlay.wallets['DUM1'].transfer = lambda *_: transfer_future
-        self.nodes[0].overlay.wallets['DUM2'].transfer = lambda *_: transfer_future
-
-        order1 = await self.nodes[0].overlay.create_bid(
-            AssetPair(AssetAmount(10, 'DUM1'), AssetAmount(10, 'DUM2')), 3600)
-        order2 = await self.nodes[1].overlay.create_ask(
-            AssetPair(AssetAmount(5, 'DUM1'), AssetAmount(5, 'DUM2')), 3600)
-
-        await sleep(0.5)
-
-        # The trade should not be finished
-        self.assertEqual(order1.status, "open")
-        self.assertEqual(order2.status, "open")
-
-        # Another node now tries to transact with node 0, which should not be accepted
-        await self.nodes[2].overlay.create_ask(AssetPair(AssetAmount(5, 'DUM1'), AssetAmount(5, 'DUM2')), 3600)
-        await sleep(0.5)
-        self.assertFalse(list(self.nodes[2].overlay.transaction_manager.find_all()))
-
-    @timeout(4)
-    async def test_e2e_trade_with_policies(self):
-        """
-        Test an e2e trade with clearing policies.
-        """
-        clearing_policy = SingleTradeClearingPolicy(self.nodes[0].overlay, max_concurrent_trades=1)
-        self.nodes[0].overlay.clearing_policies.append(clearing_policy)
-        clearing_policy = SingleTradeClearingPolicy(self.nodes[1].overlay, max_concurrent_trades=1)
-        self.nodes[1].overlay.clearing_policies.append(clearing_policy)
+        self.nodes[0].overlay.settings.entrust_limit = 15
+        self.nodes[1].overlay.settings.entrust_limit = 15
 
         await self.introduce_nodes()
 
@@ -517,25 +479,23 @@ class TestMarketCommunity(TestMarketCommunityBase):
         self.assertEqual(order2.status, "completed")
 
     @timeout(4)
-    async def test_clearing_policy_pending_trade_accept(self):
+    async def test_entrust_limit_pending_trade_accept(self):
         """
         Test whether we accept trade with a counterparty who is currently involved in another trade
         We make node 0 malicious, in other words, it does not send a payment back.
         """
-        clearing_policy = SingleTradeClearingPolicy(self.nodes[2].overlay, max_concurrent_trades=1)
-        self.nodes[2].overlay.clearing_policies.append(clearing_policy)
+        self.nodes[2].overlay.settings.entrust_limit = 15
 
         await self.introduce_nodes()
 
         transfer_future = Future()
 
         self.nodes[0].overlay.wallets['DUM1'].transfer = lambda *_: transfer_future
-        self.nodes[0].overlay.wallets['DUM2'].transfer = lambda *_: transfer_future
 
-        order1 = await self.nodes[0].overlay.create_bid(
-            AssetPair(AssetAmount(10, 'DUM1'), AssetAmount(10, 'DUM2')), 3600)
-        order2 = await self.nodes[1].overlay.create_ask(
+        order1 = await self.nodes[0].overlay.create_ask(
             AssetPair(AssetAmount(15, 'DUM1'), AssetAmount(15, 'DUM2')), 3600)
+        order2 = await self.nodes[1].overlay.create_bid(
+            AssetPair(AssetAmount(10, 'DUM1'), AssetAmount(10, 'DUM2')), 3600)
 
         await sleep(0.5)
 
@@ -548,6 +508,38 @@ class TestMarketCommunity(TestMarketCommunityBase):
         await sleep(0.5)
         self.assertTrue(list(self.nodes[2].overlay.transaction_manager.find_all()))
         transfer_future.set_result("a")
+
+    @timeout(4)
+    async def test_entrust_limit_pending_trade_incremental(self):
+        """
+        Test whether we accept trade with a counterparty who is currently involved in another trade
+        We make node 0 malicious, in other words, it does not send a payment back.
+        """
+        self.nodes[2].overlay.settings.entrust_limit = 15
+
+        await self.introduce_nodes()
+
+        transfer_future = Future()
+
+        self.nodes[0].overlay.wallets['DUM1'].transfer = lambda *_: transfer_future
+
+        order1 = await self.nodes[0].overlay.create_ask(
+            AssetPair(AssetAmount(20, 'DUM1'), AssetAmount(20, 'DUM2')), 3600)
+        order2 = await self.nodes[1].overlay.create_bid(
+            AssetPair(AssetAmount(10, 'DUM1'), AssetAmount(10, 'DUM2')), 3600)
+
+        await sleep(0.5)
+
+        # The trade should not be finished
+        self.assertEqual(order1.status, "open")
+        self.assertEqual(order2.status, "open")
+
+        # Check that we can trade with the other party
+        await self.nodes[2].overlay.create_bid(AssetPair(AssetAmount(10, 'DUM1'), AssetAmount(10, 'DUM2')), 3600)
+        await sleep(0.5)
+        txs = list(self.nodes[2].overlay.transaction_manager.find_all())
+        self.assertTrue(txs)
+        self.assertEqual(txs[0].num_payments, 2)
 
 
 class TestMarketCommunityTwoNodes(TestMarketCommunityBase):
@@ -595,17 +587,17 @@ class TestMarketCommunityTwoNodes(TestMarketCommunityBase):
 
             # Check responsibility counters
             if block.type == b"tx_init":
-                self.assertEqual(block.transaction["responsibilities"], 0)
-                self.assertEqual(linked.transaction["responsibilities"], 1)
+                self.assertTrue(block.transaction["entrusted"])
+                self.assertFalse(linked.transaction["entrusted"])
             elif block.type == b"tx_done":
-                self.assertEqual(block.transaction["responsibilities"], 0)
-                self.assertEqual(linked.transaction["responsibilities"], 0)
+                self.assertTrue(block.transaction["entrusted"])
+                self.assertFalse(linked.transaction["entrusted"])
             elif block.type == b"tx_payment" and block.link_sequence_number == 0:
-                self.assertEqual(block.transaction["responsibilities"], 0)
-                self.assertEqual(linked.transaction["responsibilities"], 1)
+                self.assertTrue(block.transaction["entrusted"])
+                self.assertFalse(linked.transaction["entrusted"])
             elif block.type == b"tx_payment" and block.link_sequence_number != 0:
-                self.assertEqual(block.transaction["responsibilities"], 1)
-                self.assertEqual(linked.transaction["responsibilities"], 0)
+                self.assertTrue(block.transaction["entrusted"])
+                self.assertFalse(linked.transaction["entrusted"])
 
     @timeout(2)
     async def test_partial_trade(self):
@@ -785,7 +777,7 @@ class TestMarketCommunitySingle(TestMarketCommunityBase):
         tx = Transaction(TransactionId(b'a' * 32),
                          AssetPair(AssetAmount(traded_amount, 'BTC'), AssetAmount(traded_amount, 'MB')),
                          OrderId(TraderId(b'0' * 20), OrderNumber(1)),
-                         OrderId(TraderId(b'1' * 20), OrderNumber(1)), Timestamp(0))
+                         OrderId(TraderId(b'1' * 20), OrderNumber(1)), 2, Timestamp(0))
         tx.transferred_assets.first += AssetAmount(traded_amount, 'BTC')
         tx.transferred_assets.second += AssetAmount(traded_amount, 'MB')
         tx_done_block = MarketBlock()
@@ -854,7 +846,7 @@ class TestMarketCommunitySingle(TestMarketCommunityBase):
         """
         with self.assertRaises(RuntimeError):
             await self.nodes[0].overlay.create_ask(AssetPair(AssetAmount(10, 'DUM1'),
-                                                             AssetAmount(10, 'DUM2')), 3600 * 1000)
+                                                             AssetAmount(10, 'DUM2')), MAX_ORDER_TIMEOUT + 1)
 
 
 class TestMarketCommunityWithDatabase(TestMarketCommunityBase):

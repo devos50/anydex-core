@@ -35,3 +35,4 @@ class SimulatedIPv8(object):
         self.overlay = SimulatedMarketCommunity(self.my_peer, self.endpoint, self.network, use_database=False,
                                                 sim_settings=sim_settings, trustchain=self.trustchain,
                                                 is_matchmaker=is_matchmaker, wallets=wallets, data_dir=data_dir)
+        self.overlay.settings.match_window = 2

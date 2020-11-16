@@ -29,7 +29,7 @@ class Trade(Message):
         self._proposal_id = proposal_id
 
     @classmethod
-    def propose(cls, trader_id, order_id, recipient_order_id, assets, timestamp):
+    def propose(cls, trader_id, order_id, recipient_order_id, assets, num_payments, timestamp):
         """
         Propose a trade to another node
 
@@ -51,6 +51,7 @@ class Trade(Message):
             recipient_order_id,
             random.randint(0, 100000000),
             assets,
+            num_payments,
             timestamp
         )
 
@@ -99,11 +100,12 @@ class Trade(Message):
             proposed_trade.order_id,
             proposed_trade.proposal_id,
             proposed_trade.assets,
+            proposed_trade.num_payments,
             timestamp,
         )
 
     @classmethod
-    def counter(cls, trader_id, assets, timestamp, proposed_trade):
+    def counter(cls, trader_id, assets, num_payments, timestamp, proposed_trade):
         """
         Counter a trade from another node
 
@@ -124,6 +126,7 @@ class Trade(Message):
             proposed_trade.order_id,
             proposed_trade.proposal_id,
             assets,
+            num_payments,
             timestamp
         )
 
@@ -162,7 +165,7 @@ class ProposedTrade(Trade):
     proposed trade is send first.
     """
 
-    def __init__(self, trader_id, order_id, recipient_order_id, proposal_id, assets, timestamp):
+    def __init__(self, trader_id, order_id, recipient_order_id, proposal_id, assets, num_payments, timestamp):
         """
         Don't use this method directly, use the class methods from Trade or use the from_network
 
@@ -182,6 +185,7 @@ class ProposedTrade(Trade):
         super(ProposedTrade, self).__init__(trader_id, order_id, recipient_order_id, proposal_id, timestamp)
 
         self._assets = assets
+        self._num_payments = num_payments
 
     @classmethod
     def from_network(cls, data):
@@ -198,6 +202,7 @@ class ProposedTrade(Trade):
             data.recipient_order_id,
             data.proposal_id,
             data.assets,
+            data.num_payments,
             data.timestamp
         )
 
@@ -209,6 +214,10 @@ class ProposedTrade(Trade):
         """
         return self._assets
 
+    @property
+    def num_payments(self):
+        return self._num_payments
+
     def to_network(self):
         """
         Return network representation of a proposed trade
@@ -219,7 +228,8 @@ class ProposedTrade(Trade):
             self._order_id.order_number,
             self._recipient_order_id,
             self._proposal_id,
-            self._assets
+            self._assets,
+            self._num_payments
         )
 
 
@@ -245,6 +255,7 @@ class CounterTrade(ProposedTrade):
             data.recipient_order_id,
             data.proposal_id,
             data.assets,
+            data.num_payments,
             data.timestamp
         )
 
@@ -258,7 +269,8 @@ class CounterTrade(ProposedTrade):
             self._order_id.order_number,
             self._recipient_order_id,
             self._proposal_id,
-            self._assets
+            self._assets,
+            self._num_payments
         )
 
 
@@ -346,5 +358,6 @@ class AcceptedTrade(ProposedTrade):
             "partner_trader_id": self.trader_id.as_hex(),
             "partner_order_number": int(self.order_id.order_number),
             "assets": self.assets.to_dictionary(),
+            "payments": self.num_payments,
             "timestamp": int(self.timestamp)
         }

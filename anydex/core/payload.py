@@ -138,14 +138,15 @@ class TradePayload(MessagePayload):
     Payload that contains a trade in the market community.
     """
 
-    format_list = MessagePayload.format_list + ['I', 'varlenI', 'I', 'I', 'Q', 'varlenI', 'Q', 'varlenI']
+    format_list = MessagePayload.format_list + ['I', 'varlenI', 'I', 'I', 'Q', 'varlenI', 'Q', 'varlenI', 'I']
 
-    def __init__(self, trader_id, timestamp, order_number, recipient_order_id, proposal_id, assets):
+    def __init__(self, trader_id, timestamp, order_number, recipient_order_id, proposal_id, assets, num_payments):
         super(TradePayload, self).__init__(trader_id, timestamp)
         self.order_number = order_number
         self.recipient_order_id = recipient_order_id
         self.proposal_id = proposal_id
         self.assets = assets
+        self.num_payments = num_payments
 
     def to_pack_list(self):
         data = super(TradePayload, self).to_pack_list()
@@ -156,16 +157,17 @@ class TradePayload(MessagePayload):
                  ('Q', self.assets.first.amount),
                  ('varlenI', self.assets.first.asset_id.encode('utf-8')),
                  ('Q', self.assets.second.amount),
-                 ('varlenI', self.assets.second.asset_id.encode('utf-8'))]
+                 ('varlenI', self.assets.second.asset_id.encode('utf-8')),
+                 ('I', self.num_payments)]
         return data
 
     @classmethod
     def from_unpack_list(cls, trader_id, timestamp, order_number, recipient_trader_id, recipient_order_number,
-                         proposal_id, asset1_amount, asset1_type, asset2_amount, asset2_type):
+                         proposal_id, asset1_amount, asset1_type, asset2_amount, asset2_type, num_payments):
         return TradePayload(TraderId(trader_id), Timestamp(timestamp), OrderNumber(order_number),
                             OrderId(TraderId(recipient_trader_id), OrderNumber(recipient_order_number)), proposal_id,
                             AssetPair(AssetAmount(asset1_amount, asset1_type.decode('utf-8')),
-                                      AssetAmount(asset2_amount, asset2_type.decode('utf-8'))))
+                                      AssetAmount(asset2_amount, asset2_type.decode('utf-8'))), num_payments)
 
 
 class DeclineTradePayload(MessagePayload):

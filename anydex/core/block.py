@@ -86,7 +86,7 @@ class MarketBlock(TrustChainBlock):
         Verify whether a tx_init that contains a tx transaction, is valid.
         """
         required_fields = ['trader_id', 'order_number', 'partner_trader_id', 'partner_order_number',
-                           'assets', 'timestamp']
+                           'assets', 'payments', 'timestamp']
         if not MarketBlock.has_fields(required_fields, tx):
             return False
         if len(tx) != len(required_fields):
