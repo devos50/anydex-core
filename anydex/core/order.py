@@ -336,7 +336,6 @@ class Order(object):
         if self._reserved_quantity >= quantity:
             self._reserved_quantity -= quantity
             self._reserved_ticks[order_id] -= quantity
-            assert self.available_quantity >= 0, str(self.available_quantity)
 
             if self._reserved_ticks[order_id] <= 0:  # Remove the quantity if it's zero
                 del self._reserved_ticks[order_id]
