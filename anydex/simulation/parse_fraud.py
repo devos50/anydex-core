@@ -23,9 +23,10 @@ with open(FRAUD_FILE, "r") as fraud_file:
 
         parts = line.strip().split(",")
         peer = parts[0]
-        fraud_time = float(parts[1])
-        amount = int(parts[2])
-        asset = parts[3]
+        scammed_peer = parts[1]
+        fraud_time = float(parts[2])
+        amount = int(parts[3])
+        asset = parts[4]
 
         if asset not in stolen_times:
             stolen_times[asset] = 0

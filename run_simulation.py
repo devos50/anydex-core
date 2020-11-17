@@ -8,6 +8,7 @@ from anydex.simulation.simulation import AnyDexSimulation
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='TrustChain simulator')
     parser.add_argument('--peers', '-p', default=3, type=int, help='The number of peers')
+    parser.add_argument('--strategy', '-t', default=0, type=int, help='The strategy')
     parser.add_argument('--scenario', '-s', default=None, type=str, help='The scenario file to run')
     parser.add_argument('--yappi', '-y', action='store_const', default=False, const=True, help='Run the Yappi profiler')
 
@@ -16,6 +17,7 @@ if __name__ == "__main__":
     sim_settings = SimulationSettings()
     sim_settings.peers = args.peers
     sim_settings.scenario_file = "data/scenario.txt"
+    sim_settings.strategy = args.strategy
     simulation = AnyDexSimulation(sim_settings)
     ensure_future(simulation.run(yappi=args.yappi))
 
