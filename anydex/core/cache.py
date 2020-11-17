@@ -155,7 +155,7 @@ class MatchCache(NumberCache):
                 self.has_outstanding_request_with_order_id(other_order_id):
             # Add it to the queue again
             outstanding_request = self.get_outstanding_request_with_order_id(other_order_id)
-            if outstanding_request[0] < 10:
+            if outstanding_request[0] < 2:
                 self._logger.debug("Adding entry (%d, %s, %s, %d) to matching queue again", *outstanding_request)
                 self.queue.insert(outstanding_request[0] + 1, outstanding_request[1], outstanding_request[2], outstanding_request[3])
         elif decline_reason == DeclinedTradeReason.NO_AVAILABLE_QUANTITY and \
