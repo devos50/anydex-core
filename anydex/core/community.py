@@ -1056,7 +1056,7 @@ class MarketCommunity(Community, BlockListener):
         Accept an incoming match payload and propose a trade to the counterparty
         """
         if should_reserve:
-            if order.available_quantity == 0:
+            if order.available_quantity <= 0:
                 self.logger.info("No available quantity for order %s - not sending outgoing proposal", order.order_id)
 
                 # Notify the match cache
