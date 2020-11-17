@@ -1,10 +1,10 @@
+from anydex.core.settings import MarketSettings
 from anydex.simulation.community import SimulatedMarketCommunity
 from anydex.simulation.endpoint import PySimEndpoint
 from anydex.simulation.trustchain_memory_database import TrustchainMemoryDatabase
 from anydex.trustchain.community import TrustChainCommunity
 from anydex.trustchain.settings import TrustChainSettings
 from anydex.wallet.dummy_wallet import DummyWallet1, DummyWallet2
-from core.settings import MarketSettings
 
 from ipv8.keyvault.crypto import default_eccrypto
 from ipv8.peer import Peer
