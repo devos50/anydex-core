@@ -1,5 +1,6 @@
 import heapq
 import asyncio
+from asyncio import CancelledError
 
 
 class EventSimulatorLoop(asyncio.AbstractEventLoop):
@@ -111,6 +112,8 @@ class EventSimulatorLoop(asyncio.AbstractEventLoop):
         async def wrapper():
             try:
                 await coro
+            except CancelledError:
+                pass
             except Exception as e:
                 print("Wrapped exception")
                 self._exc = e
