@@ -92,7 +92,7 @@ class MarketCommunity(Community, BlockListener):
         self.mid_register = {}
         self.pk_register = {}
         self.order_book = None
-        self.market_database = MarketDB(db_working_dir, self.DB_NAME)
+        self.market_database = None
         self.matching_engine = None
         self.transaction_manager = None
         self.use_local_address = False
@@ -104,6 +104,7 @@ class MarketCommunity(Community, BlockListener):
         self.sent_matches = set()
 
         if self.use_database:
+            self.market_database = MarketDB(db_working_dir, self.DB_NAME)
             order_repository = DatabaseOrderRepository(self.mid, self.market_database)
             transaction_repository = DatabaseTransactionRepository(self.mid, self.market_database)
         else:
