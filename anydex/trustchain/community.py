@@ -68,7 +68,7 @@ class TrustChainCommunity(Community):
                           hexlify(self.my_peer.public_key.key_to_bin()))
         self.shutting_down = False
         self.listeners_map = {}  # Map of block_type -> [callbacks]
-        self.register_task("db_cleanup", self.do_db_cleanup, interval=600)
+        #self.register_task("db_cleanup", self.do_db_cleanup, interval=600)
 
         self.add_message_handler(HalfBlockPayload, self.received_half_block)
         self.add_message_handler(CrawlRequestPayload, self.received_crawl_request)

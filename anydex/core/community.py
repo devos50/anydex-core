@@ -79,7 +79,7 @@ class MarketCommunity(Community, BlockListener):
         self.record_transactions = kwargs.pop('record_transactions', False)
         self.dht = kwargs.pop('dht', None)
         self.use_database = kwargs.pop('use_database', True)
-        self.settings = MarketSettings()
+        self.settings = kwargs.pop('settings', MarketSettings())
         self.fixed_broadcast_set = []  # Optional list of fixed peers that will receive market messages
 
         db_working_dir = kwargs.pop('working_directory', '')
@@ -229,9 +229,10 @@ class MarketCommunity(Community, BlockListener):
                 #self.register_anonymous_task('send_payment_%s' % id(transaction), self.send_payment, transaction)
                 with open(os.path.join(self.data_dir, "fraud.txt"), "a") as fraud_file:
                     stolen_assets = block.transaction["payment"]["transferred"]
-                    self.logger.error("COMMIT FRAUD: %s" % stolen_assets)
+                    counterparty_id = transaction.partner_order_id.trader_id.as_hex()[-8:]
+                    self.logger.error("COMMIT FRAUD with party %s: %s" % (counterparty_id, stolen_assets))
                     loop = get_event_loop()
-                    fraud_file.write("%s,%f,%d,%s\n" % (self.peer_id, loop.time(), stolen_assets["amount"], stolen_assets["type"]))
+                    fraud_file.write("%s,%s,%f,%d,%s\n" % (self.peer_id, counterparty_id, loop.time(), stolen_assets["amount"], stolen_assets["type"]))
 
         if block.type == b"tx_init":
             # Create a transaction, based on the information in the block
@@ -1072,7 +1073,7 @@ class MarketCommunity(Community, BlockListener):
         # the upcoming trade (since we have to make the first payment). Therefore, carefully check the entrust limit of
         # the counterparty.
         do_entrust = True
-        num_payments = 1
+        num_payments = self.settings.default_payments_per_trade
         if self.settings.entrust_limit != -1:
             propose_quantity_scaled = AssetPair.from_price(other_price, propose_quantity)
             if propose_quantity_scaled.second.amount == 0:

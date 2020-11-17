@@ -9,8 +9,8 @@ class SimulationSettings:
     entrust_limit = 100
     scenario_file = None
 
-    # 0 = no risk mitigation strategy
+    # 0 = no risk mitigation strategy and no incremental settlement
     # 1 = incremental settlement (2)
     # 2 = restrict, no incremental settlement
     # 3 = restrict + incremental settlement
-    strategy_profile = 0  # TODO finish!!
+    strategy = 0

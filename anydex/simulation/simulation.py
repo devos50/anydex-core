@@ -37,7 +37,7 @@ class AnyDexSimulation:
             self.scenario = Scenario(settings.scenario_file)
             self.scenario.parse()
             self.settings.peers = len(self.scenario.unique_users) + 1  # The last peer is the matchmaker
-            self.data_dir = os.path.join("data", "n_%d" % (self.settings.peers,))  # Reset the data dir
+            self.data_dir = os.path.join("data", "n_%d_s_%d" % (self.settings.peers, self.settings.strategy))  # Reset the data dir
 
     def start_ipv8_nodes(self):
         for peer_ind in range(self.settings.peers):
@@ -122,10 +122,6 @@ class AnyDexSimulation:
                 if node_a == node_b:
                     continue
 
-                node_a.network.verified_peers.add(node_b.my_peer)
-                node_a.network.reverse_ip_lookup[node_b.my_peer.address] = node_b
-                node_b.network.reverse_ip_lookup[node_a.my_peer.address] = node_a
-                node_a.network.discover_services(node_b.my_peer, [node_a.overlay.community_id, ])
                 node_a.overlay.update_ip(TraderId(node_b.overlay.mid), node_b.my_peer.address)
 
             # If this node is a matchmaker, introduce it to everyone

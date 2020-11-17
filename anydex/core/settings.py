@@ -10,4 +10,5 @@ class MarketSettings(object):
         self.num_order_sync = 10        # How many orders to sync at most
         self.match_process_batch_size = 20  # How many match items we process in one batch
         self.entrust_limit = -1        # How much money we entrust to others (in USD)
+        self.default_payments_per_trade = 1  # How many payments we make per trade, if there is no entrust limit
         self.max_payments_per_trade = 20  # The maximum number of payments we allow per trade
