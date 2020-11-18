@@ -5,7 +5,7 @@ import os
 
 from anydex.core import CONVERSION_RATES
 
-FRAUD_FILE = "../../data/n_677/fraud.txt"
+FRAUD_FILE = "../../data/n_4_s_0/fraud.txt"
 BTS_USD = 0.01899240
 
 stolen_per_user = {}
@@ -48,10 +48,15 @@ for asset in stolen_times:
 
 print("Total fraud: %f" % total_fraud)
 
+frauds_sorted = []
+for peer, stolen_value in stolen_per_user.items():
+    frauds_sorted.append((peer, stolen_value))
+frauds_sorted = sorted(frauds_sorted, key=lambda x: x[1])
+
 with open("fraud_per_user.csv", "w") as fraud_file:
     fraud_file.write("peer,stolen\n")
     max_stolen_per_user = 0
-    for peer, stolen_value in stolen_per_user.items():
+    for peer, stolen_value in frauds_sorted:
         print("%s => %f" % (peer, stolen_value))
         fraud_file.write("%s,%f\n" % (peer, stolen_value))
         if stolen_value > max_stolen_per_user:
