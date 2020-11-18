@@ -1003,7 +1003,7 @@ class MarketCommunity(Community, BlockListener):
             return False, 0
 
         # Wait a small, random period to avoid getting the non-latest state
-        await sleep(random.random(), loop=get_event_loop())
+        await sleep(random.random() * 2, loop=get_event_loop())
 
         # Get the public key of the peer
         peer_pk = await self.send_trader_pk_request(trader_id)
